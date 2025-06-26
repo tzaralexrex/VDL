@@ -40,24 +40,11 @@ debug_file_initialized = False
 
 def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
     """
-    Проверяет, работает ли указанный cookie-файл.
-    Загружает тестовую страницу, характерную для платформы.
-    Возвращает True, если запрос проходит без ошибки авторизации.
+    Быстро проверяет, «жив» ли куки-файл.
+    Для YouTube берём главную страницу, для Facebook — тоже.
+    Возвращает True, если запрос прошёл без ошибки авторизации.
     """
-
-    platform_test_urls = {
-        "youtube":  "https://www.youtube.com",
-        "facebook": "https://www.facebook.com",
-        "vimeo":    "https://vimeo.com",
-        "rutube":   "https://rutube.ru",
-        "vk":       "https://vk.com",
-    }
-
-    test_url = platform_test_urls.get(platform)
-    if not test_url:
-        log_debug(f"cookie_file_is_valid: Неизвестная платформа '{platform}', невозможно проверить куки.")
-        return False
-
+    test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
     try:
         opts = {
             "quiet": True,
@@ -67,14 +54,10 @@ def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(test_url, download=False)
-        log_debug(f"cookie_file_is_valid: Куки для {platform} прошли проверку.")
         return True
-
-    except DownloadError as e:
-        log_debug(f"cookie_file_is_valid: DownloadError для {platform}:\n{str(e)}")
+    except DownloadError:
         return False
-    except Exception as e:
-        log_debug(f"cookie_file_is_valid: Ошибка при проверке куков для {platform}:\n{traceback.format_exc()}")
+    except Exception:
         return False
 
 def detect_ffmpeg_path():
@@ -183,24 +166,11 @@ def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
 
-def get_cookies_for_platform(platform: str, force_browser: bool = False) -> str | None:
+def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: bool = False) -> str | None:
     """
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
     """
-
-    cookie_files = {
-        'youtube':  'cookies_yt.txt',
-        'facebook': 'cookies_fb.txt',
-        'vimeo':    'cookies_vi.txt',
-        'rutube':   'cookies_rt.txt',
-        'vk':       'cookies_vk.txt',
-    }
-
-    cookie_file = cookie_files.get(platform)
-    if not cookie_file:
-        log_debug(f"Неизвестная платформа '{platform}' — cookie-файл не определён.")
-        return None
 
     # 1. Попытка загрузить куки из существующего файла
     if os.path.exists(cookie_file):
@@ -271,6 +241,7 @@ def get_cookies_for_platform(platform: str, force_browser: bool = False) -> str 
     return None
 
 
+
 def get_video_info(url, platform, cookie_file_path=None):
     ydl_opts = {'quiet': True, 'skip_download': True}
     if cookie_file_path:
@@ -285,16 +256,16 @@ def get_video_info(url, platform, cookie_file_path=None):
             info['__cookiefile__'] = cookie_file_path
         return info
 
-
 def safe_get_video_info(url: str, platform: str):
     """
     Пытается: 1) c куками из файла → 2) вытаскивает куки из браузера → 3) без куков.
     Если контент всё равно требует логин — выводит инструкцию и завершает работу.
     """
+    # Определяем имя cookie‑файла
+    cookie_path = COOKIES_FB if platform == "facebook" else COOKIES_YT
 
-    # 1-я попытка: из файла, если он есть и валиден
-    current_cookie = get_cookies_for_platform(platform)
-
+    # 1-я попытка: то, что уже есть на диске
+    current_cookie = get_cookies_for_platform(platform, cookie_path)
     for attempt in ("file", "browser", "none"):
         try:
             return get_video_info(url, platform, current_cookie if attempt != "none" else None)
@@ -302,29 +273,19 @@ def safe_get_video_info(url: str, platform: str):
             err_l = str(err).lower()
             need_login = any(x in err_l for x in ("login", "403", "private", "sign in"))
             if not need_login:
-                raise  # ошибка не связана с авторизацией
-
+                raise  # ошибка не про авторизацию
             if attempt == "file":
-                # 2-я попытка: извлекаем свежие куки из браузера
-                current_cookie = get_cookies_for_platform(platform, force_browser=True)
-
+                # 2-я попытка: принудительно берём свежие куки из браузера
+                current_cookie = get_cookies_for_platform(platform, cookie_path, force_browser=True)
             elif attempt == "browser":
                 # 3-я попытка: совсем без куков
                 current_cookie = None
-
             else:
-                cookie_file_example = {
-                    'youtube':  'cookies_yt.txt',
-                    'facebook': 'cookies_fb.txt',
-                    'vimeo':    'cookies_vi.txt',
-                    'rutube':   'cookies_rt.txt',
-                    'vk':       'cookies_vk.txt',
-                }.get(platform, 'cookies.txt')
-
                 print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
                       f"Сохраните их вручную (расширением EditThisCookie, Get cookies.txt, и т.д.)\n"
-                      f"и положите файл сюда: {cookie_file_example}\n")
+                      f"и положите файл сюда: {cookie_path}\n")
                 sys.exit(1)
+
 
 
 def choose_format(formats):
@@ -754,12 +715,48 @@ def download_video(url, video_id, audio_id, output_path, output_name, merge_form
             print(Fore.RED + f"Произошла непредвиденная ошибка во время загрузки: {e}" + Style.RESET_ALL)
             raise
 
+def save_chapters_to_file(chapters, path):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(";FFMETADATA1\n")
+            for i, ch in enumerate(chapters, 1):
+                start = int(ch.get("start_time", 0) * 1000)
+                end = int(ch.get("end_time", ch.get("start_time", 0) + 1) * 1000)
+                title = ch.get("title", f"Chapter {i}")
+                f.write("[CHAPTER]\n")
+                f.write("TIMEBASE=1/1000\n")
+                f.write(f"START={start}\n")
+                f.write(f"END={end}\n")
+                f.write(f"TITLE={title}\n")
+        log_debug(f"Файл глав сохранён в формате ffmetadata: {path}")
+        return True
+    except Exception as e:
+        print(Fore.RED + f"Ошибка при сохранении файла глав (ffmetadata): {e}" + Style.RESET_ALL)
+        log_debug(f"Ошибка сохранения файла глав (ffmetadata): {e}")
+        return False
+
+"""
+def save_chapters_to_file(chapters, path):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            for i, ch in enumerate(chapters, 1):
+                title = ch.get("title", f"Глава {i}")
+                start = int(ch.get("start_time", 0))
+                mins, secs = divmod(start, 60)
+                f.write(f"{mins:02}:{secs:02} {title}\n")
+        log_debug(f"Файл глав сохранён: {path}")
+        return True
+    except Exception as e:
+        print(Fore.RED + f"Ошибка при сохранении файла глав: {e}" + Style.RESET_ALL)
+        log_debug(f"Ошибка сохранения файла глав: {e}")
+        return False
+"""
+
 def main():
-    print(Fore.YELLOW + "YouTube & Facebook Video Downloader")
+    print(Fore.YELLOW + "Universal Video Downloader")
     raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
     log_debug(f"Введена ссылка: {raw_url}")
 
-    # Переменные для хранения информации о файлах для обработки при прерывании
     output_path = None
     output_name = None
     output_format = None
@@ -768,82 +765,87 @@ def main():
 
     try:
         platform, url = extract_platform_and_url(raw_url)
-
         info = safe_get_video_info(url, platform)
-        cookie_file_to_use = info.get('__cookiefile__')  # значение будет None, если info не содержит его
+        cookie_file_to_use = info.get('__cookiefile__')
 
-        # log_debug(json.dumps(info, indent=2)) # Это может быть слишком объемно для лога
+        chapters = info.get("chapters")
+        has_chapters = isinstance(chapters, list) and len(chapters) > 0
+        log_debug(f"Наличие глав: {has_chapters}")
 
         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
-
         subtitle_download_options = ask_and_select_subtitles(info)
+
+        # --- Главы: спросим про сохранение до выбора папки
+        save_chapter_file = False
+        integrate_chapters = False
+        keep_chapter_file = False
+        chapter_filename = None
+
+        if has_chapters:
+            ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            save_chapter_file = ask_chaps != "0"
+            log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
+
         output_path = select_output_folder()
         output_format = ask_output_format(desired_ext)
 
-        # --- Опрос: какие субтитры интегрировать в MKV (до загрузки) ---
+        # --- Субтитры: опрос об интеграции
         integrate_subs = False
         keep_sub_files = True
         subs_to_integrate_langs = []
-        
-        if output_format.lower() == 'mkv' \
-                and subtitle_download_options \
-                and subtitle_download_options.get('subtitleslangs'):
-        
+
+        if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
             available_langs = subtitle_download_options['subtitleslangs']
-        
-            print(Fore.CYAN +
-                  "\nКакие субтитры интегрировать в итоговый MKV?"
+            print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
                   "\n  Введите номера или коды языков (через запятую или пробел)."
                   "\n  Enter, 0 или all — интегрировать ВСЕ."
                   "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
-        
             for idx, lang in enumerate(available_langs, 1):
                 print(f"{idx}: {lang}")
-        
-            sel = input(Fore.CYAN + "Ваш выбор → " + Style.RESET_ALL).strip()
-        
-            if sel in ("", "0", "all"):                       # все языки
+            sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
+            if sel in ("", "0", "all"):
                 subs_to_integrate_langs = available_langs.copy()
                 integrate_subs = True
-        
-            elif sel == "-":                                  # ничего не интегрируем
+            elif sel == "-":
                 integrate_subs = False
-                subs_to_integrate_langs = []
-        
-            else:                                             # список номеров / кодов
+            else:
                 parts = [s.strip() for s in re.split(r"[,\s]+", sel) if s.strip()]
                 for p in parts:
                     if p.isdigit() and 1 <= int(p) <= len(available_langs):
                         subs_to_integrate_langs.append(available_langs[int(p) - 1])
                     elif p in available_langs:
                         subs_to_integrate_langs.append(p)
-        
                 subs_to_integrate_langs = sorted(set(subs_to_integrate_langs))
                 integrate_subs = bool(subs_to_integrate_langs)
-        
             log_debug(f"Выбраны языки для интеграции: {subs_to_integrate_langs}")
-        
             if integrate_subs:
-                keep_input = input(Fore.CYAN +
-                                   "Сохранять субтитры отдельными файлами?"
-                                   " (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                keep_input = input(Fore.CYAN + "Сохранять субтитры отдельными файлами? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                 keep_sub_files = (keep_input != "0")
                 log_debug(f"keep_sub_files = {keep_sub_files}")
 
-        
-        log_debug(f"Интеграция субтитров: {integrate_subs}, "
-                  f"языки: {subs_to_integrate_langs}, "
-                  f"keep files: {keep_sub_files}")
+        log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
+
+        # --- Главы: опрос об интеграции в MKV
+        if output_format.lower() == 'mkv' and has_chapters:
+            chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            integrate_chapters = chaps != "0"
+            log_debug(f"Интеграция глав: {integrate_chapters}")
+            if integrate_chapters:
+                keep = input(Fore.CYAN + "Сохранять файл с главами отдельно? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                keep_chapter_file = keep == "1"
+                log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
 
         default_title = info.get('title', 'video')
-        # Очищаем заголовок от недопустимых символов для имен файлов
         safe_title = re.sub(r'[<>:"/\\|?*]', '', default_title)
         log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-
         output_name = ask_output_filename(safe_title, output_path, output_format)
         log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
-        log_debug(f"subtitle_options переданы: {subtitle_download_options}")
 
+        if (save_chapter_file or integrate_chapters) and has_chapters:
+            chapter_filename = os.path.join(output_path, f"{output_name}.chapters.txt")
+            save_chapters_to_file(chapters, chapter_filename)
+
+        log_debug(f"subtitle_options переданы: {subtitle_download_options}")
 
         downloaded_file = download_video(
             url, video_id, audio_id, output_path, output_name, output_format,
@@ -853,8 +855,6 @@ def main():
         if downloaded_file:
             current_processing_file = downloaded_file
             desired_ext = output_format.lower()
-
-            # --- Обнаружение загруженных субтитров ---
             subtitle_langs = subtitle_download_options.get('subtitleslangs') if subtitle_download_options else []
             subtitle_format = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else 'srt'
             subtitle_files = []
@@ -866,91 +866,85 @@ def main():
                     log_debug(f"Для интеграции найден файл субтитров: {sub_path}")
                 else:
                     log_debug(f"Файл субтитров для языка {lang} не найден (.{subtitle_format})")
-            
+
             ffmpeg_path = detect_ffmpeg_path()
             if not ffmpeg_path:
                 print(Fore.RED + "FFmpeg не найден. Обработка невозможна." + Style.RESET_ALL)
                 log_debug("FFmpeg не найден, обработка невозможна.")
             else:
-                # --- Интеграция субтитров только для MKV ---
-                # --- Интеграция субтитров (параметры получены ДО скачивания) ---
                 subs_to_integrate = []
                 if integrate_subs and subtitle_files:
-                    # оставляем только те субтитры, что выбраны пользователем
                     subs_to_integrate = [
                         (sub_file, lang)
                         for sub_file, lang in subtitle_files
                         if not subs_to_integrate_langs or lang in subs_to_integrate_langs
                     ]
-                # переменные integrate_subs, keep_sub_files уже установлены ранее
 
-                # --- Объединение/ремукс ---
                 temp_output_file = os.path.join(output_path, f"{output_name}_muxed_temp.{desired_ext}")
-                
                 ffmpeg_cmd = [ffmpeg_path, '-loglevel', 'warning']
-                
-                # Добавляем флаг только для AVI
-                if desired_ext.lower() == 'avi':
+                if desired_ext == 'avi':
                     ffmpeg_cmd += ['-fflags', '+genpts']
-                
-                # Основной видео/аудиофайл
                 ffmpeg_cmd += ['-i', current_processing_file]
-                
-                # Добавляем субтитры, если нужно интегрировать
+
                 if integrate_subs and subs_to_integrate:
-                    for sub_file, lang in subs_to_integrate:
+                    for sub_file, _ in subs_to_integrate:
                         ffmpeg_cmd += ['-i', sub_file]
-                
-                # --- Определяем режим для webm ---
+
+                if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
+                    ffmpeg_cmd += ['-f', 'ffmetadata', '-i', chapter_filename]
+
                 need_webm_transcode = False
-                if desired_ext.lower() == 'webm':
-                    # video_ext, audio_ext, video_codec, audio_codec должны быть определены из choose_format
-                    if not (
-                        video_ext.lower() == 'webm'
-                        and audio_ext.lower() == 'webm'
-                        and video_codec in ('vp8', 'vp9', 'av1')
-                        and audio_codec in ('opus', 'vorbis')
-                    ):
+                if desired_ext == 'webm':
+                    if not (video_ext == 'webm' and audio_ext == 'webm' and video_codec in ('vp8', 'vp9', 'av1') and audio_codec in ('opus', 'vorbis')):
                         need_webm_transcode = True
-                
-                # Выбор кодеков
-                if desired_ext.lower() == 'webm':
+
+                # Кодеки
+                if desired_ext == 'webm':
                     if need_webm_transcode:
                         ffmpeg_cmd += ['-c:v', 'libvpx-vp9', '-c:a', 'libopus']
                     else:
-                        ffmpeg_cmd += ['-c', 'copy']
+                        ffmpeg_cmd += ['-c:v', 'copy', '-c:a', 'copy']
                 else:
-                    ffmpeg_cmd += ['-c', 'copy']
-                
-                # map для основного файла
-                ffmpeg_cmd += ['-map', '0']
-                
-                # map и метаданные для субтитров
+                    ffmpeg_cmd += ['-c:v', 'copy', '-c:a', 'copy']
+
                 if integrate_subs and subs_to_integrate:
-                    for idx, (sub_file, lang) in enumerate(subs_to_integrate):
+                    ffmpeg_cmd += ['-c:s', 'srt']
+
+                # Карты потоков
+                ffmpeg_cmd += ['-map', '0']
+
+                if integrate_subs and subs_to_integrate:
+                    for idx, (_, lang) in enumerate(subs_to_integrate):
                         ffmpeg_cmd += ['-map', str(idx + 1)]
                         ffmpeg_cmd += [f'-metadata:s:s:{idx}', f'language={lang}']
-                
-                # Финальный выходной файл
-                ffmpeg_cmd += [temp_output_file]
-                
-                # Логируем команду
-                log_debug(f"Выполняется команда ffmpeg для объединения: {' '.join(map(str, ffmpeg_cmd))}")
 
-                # Запускаем ffmpeg и логируем вывод
+                if integrate_chapters and chapter_filename:
+                    chapter_input_idx = 1 + len(subs_to_integrate)
+                    ffmpeg_cmd += ['-map_metadata', str(chapter_input_idx)]
+
+                ffmpeg_cmd += [temp_output_file]
+                log_debug(f"Выполняется команда ffmpeg для объединения: {' '.join(map(str, ffmpeg_cmd))}")
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-                
+
+
                 if result.returncode == 0:
                     try:
                         os.remove(current_processing_file)
                     except Exception as e:
                         log_debug(f"Ошибка при удалении исходного файла после mux: {e}")
                     current_processing_file = temp_output_file
-                
+
+                    if integrate_chapters and chapter_filename and not keep_chapter_file:
+                        try:
+                            os.remove(chapter_filename)
+                            print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
+                            log_debug(f"Удалён временный файл глав: {chapter_filename}")
+                        except Exception as e:
+                            log_debug(f"Ошибка при удалении файла глав: {e}")
+
                     if integrate_subs and subs_to_integrate:
                         print(Fore.GREEN + f"Видео, аудио и субтитры объединены в {desired_ext.upper()}." + Style.RESET_ALL)
                         log_debug(f"Видео, аудио и субтитры объединены в {desired_ext.upper()}: {temp_output_file}")
-                
                         if not keep_sub_files:
                             for sub_file, _ in subs_to_integrate:
                                 try:
@@ -966,12 +960,19 @@ def main():
                 else:
                     print(Fore.RED + "Ошибка при объединении через ffmpeg." + Style.RESET_ALL)
                     log_debug("Ошибка при объединении через ffmpeg.")
-                
-                
-            # --- Финальное переименование ---
+
             final_target_filename = os.path.join(output_path, f"{output_name}.{output_format}")
             if os.path.abspath(current_processing_file) != os.path.abspath(final_target_filename):
                 try:
+                    if os.path.exists(final_target_filename):
+                        try:
+                            os.remove(final_target_filename)
+                            log_debug(f"Удалён существующий файл перед переименованием: {final_target_filename}")
+                        except Exception as e:
+                            log_debug(f"Не удалось удалить существующий файл перед переименованием: {e}")
+                            print(Fore.RED + f"Не удалось удалить файл '{final_target_filename}' перед переименованием: {e}" + Style.RESET_ALL)
+                            final_target_filename = current_processing_file  # fallback
+                            raise e  # пробрасываем исключение, чтобы не делать переименование
                     os.rename(current_processing_file, final_target_filename)
                     log_debug(f"Переименован файл: {current_processing_file} -> {final_target_filename}")
                 except Exception as e:
@@ -983,178 +984,12 @@ def main():
             log_debug(f"Видео успешно сохранено в: {final_target_filename}")
 
         else:
-            print(Fore.YELLOW + "\nЗагрузка завершилась, но конечный файл не найден. Возможно, произошла ошибка или загрузка была прервана." + Style.RESET_ALL)
+            print(Fore.YELLOW + "\nЗагрузка завершилась, но конечный файл не найден." + Style.RESET_ALL)
             log_debug("Загрузка завершилась, но конечный файл не найден.")
 
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
         log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
-
-        # Проверим, есть ли информация для обработки файлов
-        if output_path and output_name:
-            log_debug(f"Обработка временных файлов после прерывания. Путь: '{output_path}', Имя: '{output_name}'")
-            # Находим все .part файлы, которые могли быть созданы для этого видео
-            # Используем glob для поиска файлов, соответствующих шаблону.
-
-            temp_file_pattern = os.path.join(output_path, f"{output_name}.*.part")
-            part_files = glob.glob(temp_file_pattern)
-            log_debug(f"Найденные .part файлы по шаблону '{temp_file_pattern}': {part_files}")
-
-            ffmpeg_temp_pattern = os.path.join(output_path, f"{output_name}.temp.*")
-            temp_files_ffmpeg = glob.glob(ffmpeg_temp_pattern)
-            log_debug(f"Найденные временные файлы ffmpeg по шаблону '{ffmpeg_temp_pattern}': {temp_files_ffmpeg}")
-
-            main_incomplete_file = os.path.join(output_path, f"{output_name}.{output_format}")
-            if os.path.exists(main_incomplete_file) and os.path.getsize(main_incomplete_file) == 0:
-                log_debug(f"Найден пустой основной файл: {main_incomplete_file}")
-                part_files.append(main_incomplete_file)
-
-            relevant_part_files = []
-            if video_id:
-                relevant_part_files.extend([
-                    f for f in part_files
-                    if f.startswith(os.path.join(output_path, f"{output_name}.f{video_id}"))
-                    or f.startswith(os.path.join(output_path, f"{output_name}.f{video_id}."))
-                ])
-                log_debug(f"Relevant .part files for video ID {video_id}: {relevant_part_files}")
-            if audio_id:
-                relevant_part_files.extend([
-                    f for f in part_files
-                    if f.startswith(os.path.join(output_path, f"{output_name}.f{audio_id}"))
-                    or f.startswith(os.path.join(output_path, f"{output_name}.f{audio_id}."))
-                ])
-                log_debug(f"Relevant .part files for audio ID {audio_id}: {relevant_part_files}")
-
-            relevant_part_files.extend(temp_files_ffmpeg)
-            relevant_part_files = list(set(relevant_part_files))  # Удаляем дубликаты
-            log_debug(f"Все релевантные временные файлы: {relevant_part_files}")
-
-            if relevant_part_files:
-                print(Fore.YELLOW + "\nБыли найдены незавершенные файлы загрузки:" + Style.RESET_ALL)
-                for f_path in relevant_part_files:
-                    print(f"- {os.path.basename(f_path)}")
-
-                has_video_part = any(f for f in relevant_part_files if ('.f' + str(video_id) in f or f.endswith('.part')) and '.part' in f)
-
-                if has_video_part and audio_id is not None:
-                    choice = input(Fore.CYAN + "Сохранить частично скачанный видеопоток без звука (1), удалить все временные файлы (2), или оставить как есть (Enter)? (по умолчанию: оставить): " + Style.RESET_ALL).strip()
-                else:
-                    choice = input(Fore.CYAN + "Удалить все временные файлы (1), или оставить как есть (Enter)? (по умолчанию: оставить): " + Style.RESET_ALL).strip()
-
-                log_debug(f"Пользовательский выбор по временным файлам: '{choice}'")
-
-                if choice == '1' and has_video_part and audio_id is not None:
-                    video_part_file = None
-                    for f in relevant_part_files:
-                        if f.startswith(os.path.join(output_path, f"{output_name}.f{video_id}")) and f.endswith('.part'):
-                            video_part_file = f
-                            break
-
-                    if not video_part_file:
-                        largest_part_file = None
-                        largest_size = 0
-                        for f in relevant_part_files:
-                            if f.endswith('.part') and os.path.exists(f):
-                                current_size = os.path.getsize(f)
-                                if current_size > largest_size:
-                                    largest_size = current_size
-                                    largest_part_file = f
-                        if largest_part_file:
-                            video_part_file = largest_part_file
-                            log_debug(f"Не найден специфичный видео .part файл, используется самый большой .part файл: {video_part_file}")
-
-                    if video_part_file:
-                        try:
-                            final_video_only_name = f"{output_name}_video_only.{output_format}"
-                            final_video_only_path = os.path.join(output_path, final_video_only_name)
-
-                            log_debug(f"Попытка сохранить видеопоток из '{video_part_file}' как '{final_video_only_path}'")
-
-                            if os.path.exists(video_part_file):
-                                print(Fore.GREEN + f"Попытка сохранить видеопоток как '{final_video_only_name}'..." + Style.RESET_ALL)
-                                cmd = [
-                                    ffmpeg_path,
-                                    '-loglevel', 'info ',
-                                    '-i', video_part_file,
-                                    '-c', 'copy',
-                                    '-map', '0:v:0',
-                                    '-y',
-                                    final_video_only_path
-                                ]
-                                log_debug(f"Запуск FFmpeg для сохранения частичного видео: {' '.join(cmd)}")
-                                process = subprocess.run(cmd, capture_output=True, text=True, check=True,
-                                                         creationflags=subprocess.CREATE_NO_WINDOW, encoding='utf-8', errors='replace')
-                                log_debug(f"FFmpeg stdout:\n{process.stdout}")
-                                log_debug(f"FFmpeg stderr:\n{process.stderr}")
-
-                                print(Fore.GREEN + f"Частичный видеопоток сохранен как: {final_video_only_path}" + Style.RESET_ALL)
-                                log_debug(f"Частичный видеопоток сохранен: {final_video_only_path}")
-                                for f in relevant_part_files:
-                                    try:
-                                        os.remove(f)
-                                        log_debug(f"Удален временный файл: {f}")
-                                    except OSError as e:
-                                        print(Fore.RED + f"Не удалось удалить файл {f}: {e}" + Style.RESET_ALL)
-                                        log_debug(f"Ошибка удаления файла {f}: {e}")
-                                print(Fore.GREEN + "Все временные файлы удалены." + Style.RESET_ALL)
-
-                            else:
-                                print(Fore.RED + f"Файл '{video_part_file}' не найден для сохранения." + Style.RESET_ALL)
-                                log_debug(f"Файл '{video_part_file}' не найден для сохранения.")
-                                choice_after_fail = input(Fore.CYAN + "Не удалось сохранить видеопоток. Удалить остальные временные файлы (1), или оставить как есть (Enter)? (по умолчанию: оставить): " + Style.RESET_ALL).strip()
-                                if choice_after_fail == '1':
-                                    for f in relevant_part_files:
-                                        try:
-                                            os.remove(f)
-                                            log_debug(f"Удален временный файл: {f}")
-                                        except OSError as e:
-                                            print(Fore.RED + f"Не удалось удалить файл {f}: {e}" + Style.RESET_ALL)
-                                            log_debug(f"Ошибка удаления файла {f}: {e}")
-                                    print(Fore.GREEN + "Все временные файлы удалены." + Style.RESET_ALL)
-
-                        except (subprocess.CalledProcessError, FileNotFoundError) as ffmpeg_err:
-                            print(Fore.RED + f"Ошибка при обработке файла с помощью FFmpeg: {ffmpeg_err}" + Style.RESET_ALL)
-                            log_debug(f"Ошибка FFmpeg при сохранении частичного видео: {ffmpeg_err}\n{traceback.format_exc()}")
-                            choice_after_fail = input(Fore.CYAN + "Не удалось сохранить видеопоток. Удалить все временные файлы (1), или оставить как есть (Enter)? (по умолчанию: оставить): " + Style.RESET_ALL).strip()
-                            if choice_after_fail == '1':
-                                for f in relevant_part_files:
-                                    try:
-                                        os.remove(f)
-                                        log_debug(f"Удален временный файл: {f}")
-                                    except OSError as e:
-                                        print(Fore.RED + f"Не удалось удалить файл {f}: {e}" + Style.RESET_ALL)
-                                        log_debug(f"Ошибка удаления файла {f}: {e}")
-                                print(Fore.GREEN + "Все временные файлы удалены." + Style.RESET_ALL)
-                    else:
-                        print(Fore.RED + "Не удалось найти основной видео .part файл для сохранения." + Style.RESET_ALL)
-                        log_debug("Не удалось найти основной видео .part файл для сохранения.")
-                        choice_after_fail = input(Fore.CYAN + "Удалить все временные файлы (1), или оставить как есть (Enter)? (по умолчанию: оставить): " + Style.RESET_ALL).strip()
-                        if choice_after_fail == '1':
-                            for f in relevant_part_files:
-                                try:
-                                    os.remove(f)
-                                    log_debug(f"Удален временный файл: {f}")
-                                except OSError as e:
-                                    print(Fore.RED + f"Не удалось удалить файл {f}: {e}" + Style.RESET_ALL)
-                                    log_debug(f"Ошибка удаления файла {f}: {e}")
-                            print(Fore.GREEN + "Все временные файлы удалены." + Style.RESET_ALL)
-
-                elif choice == '2' or (choice == '1' and (not has_video_part or audio_id is None)):
-                    for f in relevant_part_files:
-                        try:
-                            os.remove(f)
-                            log_debug(f"Удален временный файл: {f}")
-                        except OSError as e:
-                            print(Fore.RED + f"Не удалось удалить файл {f}: {e}" + Style.RESET_ALL)
-                            log_debug(f"Ошибка удаления файла {f}: {e}")
-                    print(Fore.GREEN + "Все временные файлы удалены." + Style.RESET_ALL)
-                else:
-                    print(Fore.YELLOW + "Временные файлы оставлены как есть." + Style.RESET_ALL)
-                    log_debug("Временные файлы оставлены как есть.")
-            else:
-                print(Fore.YELLOW + "Не найдено незавершенных файлов загрузки для обработки." + Style.RESET_ALL)
-                log_debug("Не найдено незавершенных файлов загрузки для обработки.")
-
     except DownloadError as e:
         print(f"\n{Fore.RED}Ошибка загрузки: {e}{Style.RESET_ALL}")
         log_debug(f"Ошибка загрузки (DownloadError): {str(e)}")
