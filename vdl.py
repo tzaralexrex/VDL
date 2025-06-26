@@ -34,6 +34,8 @@ DEBUG_FILE = 'debug.log'
 COOKIES_FB = 'cookies_fb.txt'
 COOKIES_YT = 'cookies_yt.txt'
 
+debug_file_initialized = False
+
 def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
     """
     Быстро проверяет, «жив» ли куки-файл.
@@ -73,12 +75,23 @@ def detect_ffmpeg_path():
 
 
 def log_debug(message):
-    if DEBUG:
-        mode = 'a' if DEBUG_APPEND else 'w' # Используем DEBUG_APPEND для определения режима
+    global debug_file_initialized
+
+    if not DEBUG:
+        return
+
+    log_line = f"[{datetime.now()}] {message}\n"
+
+    if not debug_file_initialized:
+        mode = 'a' if DEBUG_APPEND else 'w'
         with open(DEBUG_FILE, mode, encoding='utf-8') as f:
             if mode == 'w':
-                f.write(f"--- Начинается новый сеанс отладки [{datetime.now()}] ---\n")
-            f.write(f"[{datetime.now()}] {message}\n")
+                f.write(f"\n{'='*60}\n--- Начинается новый сеанс отладки [{datetime.now()}] ---\n")
+            f.write(log_line)
+        debug_file_initialized = True
+    else:
+        with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
+            f.write(log_line)
 
 
 def get_last_folder():
