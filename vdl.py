@@ -1,34 +1,67 @@
 # Universal Video Downloader with Cookie Browser Support
 
+import sys
+import subprocess
+import importlib
 import os
 import re
-import json
-import subprocess
-import yt_dlp
-from yt_dlp.utils import DownloadError # Импортируем специфическую ошибку yt-dlp
 import shutil
-import sys
-import traceback
-import http.cookiejar # Для работы с куки-файлами
-import glob
 import time
 import ctypes
-import sys
-
-import browser_cookie3
-from browser_cookie3 import BrowserCookieError
-
+import json
+import threading
+import tempfile
+import argparse
+import logging
+import traceback
+import http.cookiejar
+import glob
 from pathlib import Path
-from shutil import which
-from tkinter import filedialog, Tk
 from datetime import datetime
+from shutil import which
 
+def import_or_install(package, import_name=None, pip_name=None, silent=False):
+    """Пробует импортировать пакет, если не удаётся — предлагает установить через pip.
+    package: строка для import
+    import_name: строка для импорта, если отличается от pip_name
+    pip_name: название пакета в pip (если отличается)
+    silent: если True — не спрашивать пользователя, сразу пытаться установить
+    """
+    try:
+        return importlib.import_module(import_name or package)
+    except ImportError:
+        pip_name = pip_name or package
+        print(f"[!] Необходим внешний модуль: {pip_name}")
+        if not silent:
+            answer = input(f"→ Установить {pip_name} через pip сейчас? [Y/n]: ").strip().lower()
+            if answer and answer not in ('y', 'д', ''):
+                print(f"Пожалуйста, установите пакет вручную: pip install {pip_name}")
+                sys.exit(1)
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+        except Exception as e:
+            print(f"Ошибка установки {pip_name}: {e}\nУстановите пакет вручную: pip install {pip_name}")
+            sys.exit(1)
+        # Повторный импорт
+        return importlib.import_module(import_name or package)
+
+yt_dlp = import_or_install('yt_dlp')
+browser_cookie3 = import_or_install('browser_cookie3')
+colorama = import_or_install('colorama')
+
+from yt_dlp.utils import DownloadError
+from browser_cookie3 import BrowserCookieError
 from colorama import init, Fore, Style
 
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except ImportError:
+    tk = None
 
 init(autoreset=True)  # инициализация colorama и автоматический сброс цвета после каждого print
 
-DEBUG = 1 # Глобальная переменная для включения/выключения отладки
+DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
 DEBUG_FILE = 'debug.log'
@@ -612,7 +645,7 @@ def select_output_folder():
     foreground_window = user32.GetForegroundWindow()
     user32.AttachThreadInput(user32.GetWindowThreadProcessId(foreground_window, None), current_thread_id, True)
 
-    root = Tk()
+    root = tk.Tk()
     root.withdraw()
     folder = filedialog.askdirectory(title="Выберите папку")
     root.destroy()
@@ -870,6 +903,21 @@ def save_chapters_to_file(chapters, path):
 
 def main():
     print(Fore.YELLOW + "Universal Video Downloader")
+
+    # Проверка наличия ffmpeg
+    ffmpeg_path = detect_ffmpeg_path()
+    if not ffmpeg_path:
+        print(
+            "\nДля работы необходима утилита ffmpeg.\n"
+            "Скачайте архив отсюда:\n"
+            "  https://www.gyan.dev/ffmpeg/builds/\n"
+            "или отсюда:\n"
+            "  https://github.com/BtbN/FFmpeg-Builds/releases\n"
+            "Извлеките из подпапки \\bin\\ ffmpeg.exe в папку рядом со скриптом\n"
+            "или поместите ffmpeg в системный путь PATH.\n"
+        )
+        sys.exit(1)
+
     raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
     log_debug(f"Введена ссылка: {raw_url}")
 
