@@ -73,7 +73,6 @@ def detect_ffmpeg_path():
     log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH.")
     return None
 
-
 def log_debug(message):
     global debug_file_initialized
 
@@ -85,8 +84,10 @@ def log_debug(message):
     if not debug_file_initialized:
         mode = 'a' if DEBUG_APPEND else 'w'
         with open(DEBUG_FILE, mode, encoding='utf-8') as f:
-            if mode == 'w':
+            if DEBUG_APPEND:
+                # Добавляем разделитель и заголовок нового сеанса только при дописывании
                 f.write(f"\n{'='*60}\n--- Начинается новый сеанс отладки [{datetime.now()}] ---\n")
+            # В режиме 'w' просто начинаем с первой строки
             f.write(log_line)
         debug_file_initialized = True
     else:
