@@ -569,26 +569,6 @@ def ask_output_format(default_format):
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
-def convert_vtt_to_srt(folder, basename, langs):
-    import subprocess
-    converted = []
-    for lang in langs:
-        vtt_file = os.path.join(folder, f"{basename}.{lang}.vtt")
-        srt_file = os.path.join(folder, f"{basename}.{lang}.srt")
-        if os.path.exists(vtt_file):
-            try:
-                subprocess.run(
-                    ['ffmpeg', '-y', '-i', vtt_file, srt_file],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                print(Fore.GREEN + f"Сконвертирован в .srt: {srt_file}" + Style.RESET_ALL)
-                converted.append((vtt_file, srt_file))
-            except Exception as e:
-                print(Fore.RED + f"Ошибка при конвертации {vtt_file} → {srt_file}: {e}" + Style.RESET_ALL)
-    return converted
-
 def download_video(url, video_id, audio_id, output_path, output_name, merge_format, platform, cookie_file_path=None, subtitle_options=None):
     full_output_template = os.path.join(output_path, output_name + '.%(ext)s')
     log_debug(f"Шаблон выходного файла yt-dlp: {full_output_template}")
@@ -649,18 +629,6 @@ def download_video(url, video_id, audio_id, output_path, output_name, merge_form
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.download([url])
                 log_debug(f"Загрузка yt-dlp завершена. Результат info: {info}")
-    
-                # --- Конвертация субтитров vtt → srt, если нужно ---
-                if subtitle_options and subtitle_options.get('subtitleslangs'):
-                    langs = subtitle_options['subtitleslangs']
-                    converted_files = convert_vtt_to_srt(output_path, output_name, langs)
-                    if converted_files:
-                        for vtt, _ in converted_files:
-                            try:
-                                os.remove(vtt)
-                                print(Fore.YELLOW + f"Удалён: {vtt}" + Style.RESET_ALL)
-                            except Exception as e:
-                                print(Fore.RED + f"Ошибка при удалении {vtt}: {e}" + Style.RESET_ALL)
     
                 if last_downloaded_filename and os.path.exists(last_downloaded_filename):
                     log_debug(f"Файл успешно скачан: {last_downloaded_filename}")
@@ -726,11 +694,64 @@ def main():
 
         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
 
-#        video_id, audio_id, default_ext = choose_format(info['formats'])
         subtitle_download_options = ask_and_select_subtitles(info)
         output_path = select_output_folder()
         output_format = ask_output_format(desired_ext)
-#        output_format = ask_output_format(default_ext)
+
+        # --- Опрос: какие субтитры интегрировать в MKV (до загрузки) ---
+        integrate_subs = False
+        keep_sub_files = True
+        subs_to_integrate_langs = []
+        
+        if output_format.lower() == 'mkv' \
+                and subtitle_download_options \
+                and subtitle_download_options.get('subtitleslangs'):
+        
+            available_langs = subtitle_download_options['subtitleslangs']
+        
+            print(Fore.CYAN +
+                  "\nКакие субтитры интегрировать в итоговый MKV?"
+                  "\n  • Введите номера или коды языков (через запятую или пробел)."
+                  "\n  • Enter, 0 или all — интегрировать ВСЕ."
+                  "\n  • «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
+        
+            for idx, lang in enumerate(available_langs, 1):
+                print(f"{idx}: {lang}")
+        
+            sel = input(Fore.CYAN + "Ваш выбор → " + Style.RESET_ALL).strip()
+        
+            if sel in ("", "0", "all"):                       # все языки
+                subs_to_integrate_langs = available_langs.copy()
+                integrate_subs = True
+        
+            elif sel == "-":                                  # ничего не интегрируем
+                integrate_subs = False
+                subs_to_integrate_langs = []
+        
+            else:                                             # список номеров / кодов
+                parts = [s.strip() for s in re.split(r"[,\s]+", sel) if s.strip()]
+                for p in parts:
+                    if p.isdigit() and 1 <= int(p) <= len(available_langs):
+                        subs_to_integrate_langs.append(available_langs[int(p) - 1])
+                    elif p in available_langs:
+                        subs_to_integrate_langs.append(p)
+        
+                subs_to_integrate_langs = sorted(set(subs_to_integrate_langs))
+                integrate_subs = bool(subs_to_integrate_langs)
+        
+            log_debug(f"Выбраны языки для интеграции: {subs_to_integrate_langs}")
+        
+            if integrate_subs:
+                keep_input = input(Fore.CYAN +
+                                   "Сохранять субтитры отдельными файлами?"
+                                   " (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                keep_sub_files = (keep_input != "0")
+                log_debug(f"keep_sub_files = {keep_sub_files}")
+
+        
+        log_debug(f"Интеграция субтитров: {integrate_subs}, "
+                  f"языки: {subs_to_integrate_langs}, "
+                  f"keep files: {keep_sub_files}")
 
         default_title = info.get('title', 'video')
         # Очищаем заголовок от недопустимых символов для имен файлов
@@ -751,24 +772,13 @@ def main():
             current_processing_file = downloaded_file
             desired_ext = output_format.lower()
 
-            # --- Автоматическая обработка субтитров ---
+            # --- Обнаружение загруженных субтитров ---
             subtitle_langs = subtitle_download_options.get('subtitleslangs') if subtitle_download_options else []
             subtitle_format = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else 'srt'
             subtitle_files = []
+
             for lang in subtitle_langs:
                 sub_path = os.path.join(output_path, f"{output_name}.{lang}.{subtitle_format}")
-                # Если нужный формат отсутствует, ищем vtt и конвертируем
-                if not os.path.exists(sub_path):
-                    # Поиск .vtt
-                    vtt_path = os.path.join(output_path, f"{output_name}.{lang}.vtt")
-                    if os.path.exists(vtt_path) and subtitle_format == 'srt':
-                        convert_vtt_to_srt(output_path, output_name, [lang])
-                        try:
-                            os.remove(vtt_path)
-                            log_debug(f"Автоматически сконвертирован и удалён исходник: {vtt_path}")
-                        except Exception as e:
-                            log_debug(f"Ошибка при удалении исходника .vtt: {e}")
-                    # Можно добавить поддержку других конвертаций, если потребуется
                 if os.path.exists(sub_path):
                     subtitle_files.append((sub_path, lang))
                     log_debug(f"Для интеграции найден файл субтитров: {sub_path}")
@@ -781,34 +791,16 @@ def main():
                 log_debug("FFmpeg не найден, обработка невозможна.")
             else:
                 # --- Интеграция субтитров только для MKV ---
-                integrate_subs = False
-                keep_sub_files = True
+                # --- Интеграция субтитров (параметры получены ДО скачивания) ---
                 subs_to_integrate = []
-                if desired_ext == 'mkv' and subtitle_files:
-                    print(Fore.CYAN + "\nДоступные субтитры для интеграции в MKV:")
-                    for idx, (sub_file, lang) in enumerate(subtitle_files, 1):
-                        print(f"{idx}: {os.path.basename(sub_file)} (язык: {lang})")
-                    print(Fore.CYAN + "Введите номера субтитров для интеграции (через запятую/пробел), 0/all — все, '-' — не интегрировать: " + Style.RESET_ALL)
-                    sel = input().strip()
-                    if sel == '-' or sel == '':
-                        integrate_subs = False
-                        subs_to_integrate = []
-                    elif sel == '0' or sel.lower() == 'all':
-                        integrate_subs = True
-                        subs_to_integrate = subtitle_files.copy()
-                    else:
-                        nums = [int(s) for s in re.split(r'[,\s]+', sel) if s.strip().isdigit()]
-                        subs_to_integrate = [subtitle_files[i-1] for i in nums if 1 <= i <= len(subtitle_files)]
-                        integrate_subs = bool(subs_to_integrate)
-                    log_debug(f"Пользователь выбрал для интеграции субтитры: {subs_to_integrate}")
-                    print(Fore.CYAN + "Сохранять субтитры отдельными файлами? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL)
-                    keep_files_input = input().strip()
-                    if keep_files_input == '0':
-                        keep_sub_files = False
-                    log_debug(f"Сохранять субтитры отдельными файлами: {keep_sub_files}")
-                else:
-                    integrate_subs = False
-                    subs_to_integrate = []
+                if integrate_subs and subtitle_files:
+                    # оставляем только те субтитры, что выбраны пользователем
+                    subs_to_integrate = [
+                        (sub_file, lang)
+                        for sub_file, lang in subtitle_files
+                        if not subs_to_integrate_langs or lang in subs_to_integrate_langs
+                    ]
+                # переменные integrate_subs, keep_sub_files уже установлены ранее
 
                 # --- Объединение/ремукс ---
                 temp_output_file = os.path.join(output_path, f"{output_name}_muxed_temp.{desired_ext}")
@@ -862,7 +854,7 @@ def main():
                 
                 # Логируем команду
                 log_debug(f"Выполняется команда ffmpeg для объединения: {' '.join(map(str, ffmpeg_cmd))}")
-                
+
                 # Запускаем ffmpeg и логируем вывод
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
                 
@@ -872,17 +864,20 @@ def main():
                     except Exception as e:
                         log_debug(f"Ошибка при удалении исходного файла после mux: {e}")
                     current_processing_file = temp_output_file
+                
                     if integrate_subs and subs_to_integrate:
                         print(Fore.GREEN + f"Видео, аудио и субтитры объединены в {desired_ext.upper()}." + Style.RESET_ALL)
                         log_debug(f"Видео, аудио и субтитры объединены в {desired_ext.upper()}: {temp_output_file}")
+                
                         if not keep_sub_files:
-                            for sub_file, _ in subtitle_files:
-                                if (sub_file, _) not in subs_to_integrate:
-                                    try:
-                                        os.remove(sub_file)
-                                        log_debug(f"Удалён неинтегрированный файл субтитров: {sub_file}")
-                                    except Exception as e:
-                                        log_debug(f"Ошибка при удалении файла субтитров {sub_file}: {e}")
+                            for sub_file, _ in subs_to_integrate:
+                                try:
+                                    os.remove(sub_file)
+                                    print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
+                                    log_debug(f"Удалён встроенный файл субтитров: {sub_file}")
+                                except Exception as e:
+                                    print(Fore.RED + f"Ошибка при удалении файла субтитров {sub_file}: {e}" + Style.RESET_ALL)
+                                    log_debug(f"Ошибка при удалении файла субтитров {sub_file}: {e}")
                     else:
                         print(Fore.GREEN + f"Видео и аудио объединены в {desired_ext}." + Style.RESET_ALL)
                         log_debug(f"Видео и аудио объединены в {desired_ext}: {temp_output_file}")
