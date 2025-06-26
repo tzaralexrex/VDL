@@ -16,6 +16,7 @@ import time
 import browser_cookie3
 from browser_cookie3 import BrowserCookieError
 
+from pathlib import Path
 from shutil import which
 from tkinter import filedialog, Tk
 from datetime import datetime
@@ -35,6 +36,7 @@ COOKIES_YT = 'cookies_yt.txt'
 COOKIES_VI = 'cookies_vi.txt'   # Vimeo
 COOKIES_RT = 'cookies_rt.txt'   # Rutube
 COOKIES_VK = 'cookies_vk.txt'   # VK
+COOKIES_GOOGLE = "cookies_google.txt"
 
 debug_file_initialized = False
 
@@ -138,13 +140,17 @@ def extract_platform_and_url(raw_url: str):
             log_debug(f"Ошибка при очистке URL для {platform}: {e}")
         return url
 
-    # перебираем в фиксированном порядке
+    # перебираем в фиксированном порядке (обычная проверка «известных» платформ)
     for platform, pats in patterns.items():
         for pat in pats:
             if re.search(pat, url, re.I):
                 cleaned_url = clean_url_by_platform(platform, url)
                 log_debug(f"Определена платформа: {platform} для URL: {cleaned_url}")
                 return platform, cleaned_url
+
+    # ничего не совпало - возвращаем «generic»
+    log_debug("Платформа не опознана, пробуем generic-режим.")
+    return "generic", url
 
     raise ValueError(Fore.RED + "Не удалось определить платформу (YouTube, Facebook, Vimeo, Rutube, VK)" + Style.RESET_ALL)
 
@@ -257,126 +263,222 @@ def get_video_info(url, platform, cookie_file_path=None):
         return info
 
 def safe_get_video_info(url: str, platform: str):
-    """
-    Пытается: 1) c куками из файла → 2) вытаскивает куки из браузера → 3) без куков.
-    Если контент всё равно требует логин — выводит инструкцию и завершает работу.
-    """
-    # Определяем имя cookie‑файла
-    cookie_path = COOKIES_FB if platform == "facebook" else COOKIES_YT
+    cookie_map = {
+        "youtube":  COOKIES_YT,
+        "facebook": COOKIES_FB,
+        "vimeo":    COOKIES_VI,
+        "rutube":   COOKIES_RT,
+        "vk":       COOKIES_VK,
+    }
 
-    # 1-я попытка: то, что уже есть на диске
-    current_cookie = get_cookies_for_platform(platform, cookie_path)
-    for attempt in ("file", "browser", "none"):
-        try:
-            return get_video_info(url, platform, current_cookie if attempt != "none" else None)
-        except DownloadError as err:
-            err_l = str(err).lower()
-            need_login = any(x in err_l for x in ("login", "403", "private", "sign in"))
-            if not need_login:
-                raise  # ошибка не про авторизацию
-            if attempt == "file":
-                # 2-я попытка: принудительно берём свежие куки из браузера
-                current_cookie = get_cookies_for_platform(platform, cookie_path, force_browser=True)
-            elif attempt == "browser":
-                # 3-я попытка: совсем без куков
-                current_cookie = None
-            else:
-                print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
-                      f"Сохраните их вручную (расширением EditThisCookie, Get cookies.txt, и т.д.)\n"
-                      f"и положите файл сюда: {cookie_path}\n")
-                sys.exit(1)
+    # Платформы, которые явно поддерживаются
+    if platform in cookie_map:
+        cookie_path = cookie_map[platform]
+        current_cookie = get_cookies_for_platform(platform, cookie_path)
 
+        for attempt in ("file", "browser", "none"):
+            try:
+                return get_video_info(url, platform, current_cookie if attempt != "none" else None)
+            except DownloadError as err:
+                err_l = str(err).lower()
+                need_login = any(x in err_l for x in ("login", "403", "private", "sign in", "unauthorized"))
+                if not need_login:
+                    raise
+                if attempt == "file":
+                    current_cookie = get_cookies_for_platform(platform, cookie_path, force_browser=True)
+                elif attempt == "browser":
+                    current_cookie = None
+                else:
+                    print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
+                          f"Сохраните их вручную и положите файл сюда: {cookie_path}\n")
+                    sys.exit(1)
+
+    else:
+        # ----- generic -----
+        # порядок попыток: Google‑куки → VK‑куки → пользовательский cookies.txt → без куков
+        fallback_cookies = [
+            COOKIES_GOOGLE,      # cookies_google.txt
+            COOKIES_VK,          # cookies_vk.txt
+            "cookies.txt",       # универсальное имя
+        ]
+    
+        for cookie_file in fallback_cookies + [None]:          # None = без куков
+            if cookie_file and not Path(cookie_file).is_file():
+                # файла нет — пропускаем тихо
+                continue
+            try:
+                if cookie_file:
+                    log_debug(f"generic: пробуем куки «{cookie_file}»")
+                    cookie_path = cookie_file                  # берём файл как есть, без проверки домена
+                else:
+                    log_debug("generic: пробуем без куков")
+                    cookie_path = None
+    
+                return get_video_info(url, platform, cookie_path)
+    
+            except DownloadError as err:
+                err_l = str(err).lower()
+                need_login = any(x in err_l for x in
+                                 ("login", "403", "private", "sign in", "unauthorized"))
+                if not need_login:
+                    raise          # ошибка не про авторизацию → пробрасываем
+                continue           # иначе переходим к след. cookie‑файлу
+    
+        # --- все попытки провалились ---
+        from urllib.parse import urlparse
+        site_domain = urlparse(url).hostname or "неизвестный-домен"
+    
+        print(
+            f"\nВаш сайт ({site_domain}) требует авторизации, а попытки с Google/VK cookies не помогли.\n"
+            f"Авторизуйтесь на этом сайте в браузере и сохраните куки в файл "
+            f"cookies.txt (Netscape-формат). Затем поместите его рядом со скриптом и повторите попытку.\n"
+            f"Если ничего не помоголо, возможно, ваш сайт просто не поддерживается. Извините.\n"
+        )
+    log_debug(f"generic: авторизация не удалась даже с cookies.txt для {site_domain}")
+    sys.exit(1)
 
 
 def choose_format(formats):
-    video_formats = [f for f in formats if f.get('vcodec') != 'none']
-    audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+    """
+    Возвращает кортеж:
+        (video_id, audio_id|None,
+         desired_ext, video_ext, audio_ext,
+         video_codec, audio_codec)
+    """
+    # --------------------------- сортировка ---------------------------
+    video_formats = [f for f in formats if f.get("vcodec") != "none"]
+    audio_formats = [f for f in formats if f.get("acodec") != "none"
+                     and f.get("vcodec") == "none"]
 
-    video_formats.sort(key=lambda f: (f.get('height') or 0, f.get('format_id', '')))
-    audio_formats.sort(key=lambda f: f.get('abr') or 0)
+    video_formats.sort(key=lambda f: (f.get("height") or 0,
+                                      f.get("format_id", "")))
+    audio_formats.sort(key=lambda f: f.get("abr") or 0)
 
+    # --------------------------------------------------------
+    # 1. Потоки-манифесты (DASH / HLS / Smooth Streaming …)
+    # --------------------------------------------------------
+    manifest_exts = {"mpd", "m3u8", "ism", "f4m"}
+    if any(v.get("ext") in manifest_exts for v in video_formats):
+        best_vid = video_formats[-1]            # уже самый «толстый»
+        print(
+            Fore.YELLOW
+            + f"\nОбнаружен поток-манифест ({best_vid['ext']}). "
+              "Будет скачан bestvideo+bestaudio (или best),"
+              " а объединение выполнит сам yt-dlp."
+            + Style.RESET_ALL
+        )
+        log_debug("Manifest stream detected → bestvideo+bestaudio/best")
+
+        return (
+            "bestvideo+bestaudio/best",      # video_id – спецстрока
+            None,                            # audio_id не нужен
+            "mp4",                           # желаемый контейнер
+            best_vid["ext"], "", "", ""      # остальное – служебно
+        )
+
+    # --------------------------------------------------------
+    # 2. Выводим пользователю таблицу форматов
+    # --------------------------------------------------------
     print("\n" + Fore.MAGENTA + "Доступные видеоформаты:" + Style.RESET_ALL)
     for i, f in enumerate(video_formats):
-        fmt_id = f.get('format_id', '?')
-        ext = f.get('ext', '?')
-        height = f.get('height', '?')
-        format_note = f.get('format_note', '')
-        vcodec = f.get('vcodec', '?')
-        resolution_display = f"{height}p" if height else format_note if format_note else "?p"
-        print(f"{i}: {fmt_id} - {ext} - {resolution_display} - {vcodec}")
+        fmt_id = f.get("format_id", "?")
+        ext    = f.get("ext", "?")
+        height = f.get("height")
+        note   = f.get("format_note", "")
+        vcodec = f.get("vcodec", "?")
+        rez    = f"{height}p" if height else note or "?p"
+        print(f"{i}: {fmt_id}  –  {ext}  –  {rez}  –  {vcodec}")
 
     default_video = len(video_formats) - 1
-    v_choice = input(Fore.CYAN + f"Выберите видеоформат (по умолчанию {default_video}): " + Style.RESET_ALL).strip()
-    v_choice = int(v_choice) if v_choice.isdigit() and 0 <= int(v_choice) < len(video_formats) else default_video
-    video_fmt = video_formats[v_choice]
-    log_debug(f"Выбран видеоформат ID: {video_fmt['format_id']}, Ext: {video_fmt['ext']}, Codec: {video_fmt.get('vcodec', '')}")
+    v_choice = input(
+        Fore.CYAN + f"Выберите видеоформат (Enter = {default_video}): "
+        + Style.RESET_ALL
+    ).strip()
+    v_choice = (int(v_choice) if v_choice.isdigit()
+                and 0 <= int(v_choice) < len(video_formats)
+                else default_video)
 
+    video_fmt = video_formats[v_choice]
+    log_debug(
+        f"Выбран видеоформат: id={video_fmt['format_id']}, "
+        f"ext={video_fmt['ext']}, vcodec={video_fmt.get('vcodec','')}"
+    )
+
+    # --------------------------------------------------------
+    # 3. Аудио
+    # --------------------------------------------------------
     audio_fmt = None
     if not audio_formats:
-        print(Fore.YELLOW + "\nДоступные аудиоформаты: Отдельные аудиопотоки отсутствуют. "
-              "Видео, вероятно, содержит встроенный звук." + Style.RESET_ALL)
-        input(Fore.CYAN + "Нажмите Enter для продолжения (аудиопоток будет выбран автоматически, если он встроен): "
-              + Style.RESET_ALL)
-        log_debug("Отдельные аудиоформаты отсутствуют. Будет выбран встроенный аудиопоток, если доступно.")
+        print(
+            Fore.YELLOW + "\nОтдельных аудиопотоков нет – "
+            "будет использован звук, встроенный в видео."
+            + Style.RESET_ALL
+        )
+        input(Fore.CYAN + "Enter для продолжения…" + Style.RESET_ALL)
     else:
         print("\n" + Fore.MAGENTA + "Доступные аудиоформаты:" + Style.RESET_ALL)
         for i, f in enumerate(audio_formats):
-            fmt_id = f.get('format_id', '?')
-            ext = f.get('ext', '?')
-            abr = f.get('abr', '?')
-            acodec = f.get('acodec', '?')
-            print(f"{i}: {fmt_id} - {ext} - {abr}kbps - {acodec}")
+            fmt_id = f.get("format_id", "?")
+            ext    = f.get("ext", "?")
+            abr    = f.get("abr") or "?"
+            acodec = f.get("acodec", "?")
+            print(f"{i}: {fmt_id}  –  {ext}  –  {abr} kbps  –  {acodec}")
 
-        # Подсказка по совместимости контейнеров
-        print(Fore.YELLOW +
-              f"\nДля видео {video_fmt['ext'].upper()} выбирайте аудио с тем же или соответствующим расширением "
-              f"({'m4a' if video_fmt['ext']=='mp4' else 'webm'})." + Style.RESET_ALL)
+        # --- таблица совместимости контейнер/аудио-расширения ---
+        compat = {
+            "mp4":  {"m4a", "mp3", "aac", "mp4"},
+            "webm": {"webm", "opus", "ogg"},
+            "mkv":  {"m4a", "mp3", "aac", "webm", "mp4"},
+            "avi":  {"mp3", "aac"},
+        }
+        video_ext = video_fmt["ext"].lower()
+        allowed   = compat.get(video_ext,
+                               {af["ext"] for af in audio_formats})
 
-        # Подбор первого совместимого по расширению
-        expected_audio_ext = 'm4a' if video_fmt['ext'] == 'mp4' else 'webm'
-        default_audio = None
-        for i, f in enumerate(audio_formats):
-            if f.get('ext') == expected_audio_ext:
-                default_audio = i
-                break
-        if default_audio is None:
-            default_audio = len(audio_formats) - 1  # fallback
+        # выбираем первый совместимый по умолчанию
+        default_audio = next(
+            (i for i, f in enumerate(audio_formats)
+             if f.get("ext", "").lower() in allowed),
+            len(audio_formats) - 1
+        )
 
-        # Цикл выбора с проверкой совместимости
         while True:
-            a_choice = input(Fore.CYAN + f"Выберите аудиоформат (по умолчанию {default_audio}): "
-                             + Style.RESET_ALL).strip()
-            a_choice = int(a_choice) if a_choice.isdigit() and 0 <= int(a_choice) < len(audio_formats) else default_audio
+            a_choice = input(
+                Fore.CYAN + f"Выберите аудио (Enter = {default_audio}): "
+                + Style.RESET_ALL
+            ).strip()
+            a_choice = (int(a_choice) if a_choice.isdigit()
+                        and 0 <= int(a_choice) < len(audio_formats)
+                        else default_audio)
+
             audio_fmt = audio_formats[a_choice]
+            audio_ext = audio_fmt.get("ext", "").lower()
 
-            audio_ext = audio_fmt.get('ext', '')
-            video_ext = video_fmt['ext']
+            if audio_ext in allowed:
+                break
 
-            incompatible = (
-                (video_ext == 'mp4'  and audio_ext != 'm4a') or
-                (video_ext == 'webm' and audio_ext != 'webm')
+            print(
+                Fore.RED + f"Несовместимо: видео {video_ext} ≠ аудио {audio_ext}."
+                " Выберите другой формат." + Style.RESET_ALL
             )
 
-            if incompatible:
-                print(Fore.RED + f"Несовместимо: видео {video_ext} - аудио {audio_ext}. "
-                      f"Выберите другой аудиоформат." + Style.RESET_ALL)
-                continue  # повтор запроса
-            break  # совместимо – выходим из цикла
+        log_debug(
+            f"Выбран аудио: id={audio_fmt['format_id']}, "
+            f"ext={audio_ext}, acodec={audio_fmt.get('acodec','')}"
+        )
 
-        log_debug(f"Выбран аудиоформат ID: {audio_fmt['format_id']}, Ext: {audio_fmt.get('ext', '')}, "
-                  f"Codec: {audio_fmt.get('acodec', '')}")
-
-    # Возвращаем все параметры для mux
+    # --------------------------------------------------------
+    # 4. Возвращаем выбор
+    # --------------------------------------------------------
     return (
-        video_fmt['format_id'],
-        audio_fmt['format_id'] if audio_fmt else None,
-        video_fmt['ext'],
-        video_fmt.get('ext', ''),
-        audio_fmt.get('ext', '') if audio_fmt else '',
-        video_fmt.get('vcodec', ''),
-        audio_fmt.get('acodec', '') if audio_fmt else ''
+        video_fmt["format_id"],
+        audio_fmt["format_id"] if audio_fmt else None,
+        video_fmt["ext"],
+        video_fmt["ext"],
+        audio_fmt.get("ext", "") if audio_fmt else "",
+        video_fmt.get("vcodec", ""),
+        audio_fmt.get("acodec", "") if audio_fmt else ""
     )
-
 
 def ask_and_select_subtitles(info):
     subtitles_info = info.get('subtitles') or {}
@@ -434,10 +536,8 @@ def ask_and_select_subtitles(info):
 
         for lang in selected_langs:
             if lang in auto_info:
-                ask = input(Fore.CYAN + f"Скачать также автоматические субтитры для языка '{lang}'? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                if ask == '0':
-                    continue
-                download_automatics.add(lang)
+                if input(Fore.CYAN + f"Скачать автоматические субтитры для языка '{lang}'? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip() == '1':
+                    download_automatics.add(lang)
 
         write_automatic = bool(download_automatics)
 
@@ -612,107 +712,102 @@ def ask_output_format(default_format):
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
-def download_video(url, video_id, audio_id, output_path, output_name, merge_format, platform, cookie_file_path=None, subtitle_options=None):
-    full_output_template = os.path.join(output_path, output_name + '.%(ext)s')
-    log_debug(f"Шаблон выходного файла yt-dlp: {full_output_template}")
+def download_video(
+        url, video_id, audio_id,
+        output_path, output_name,
+        merge_format, platform,
+        cookie_file_path=None,
+        subtitle_options=None):
+    """
+    Скачивает (и, при необходимости, сливает) выбранные потоки.
+    Возвращает путь к итоговому файлу либо None.
+    """
+    full_tmpl = os.path.join(output_path, output_name + '.%(ext)s')
+    log_debug(f"yt‑dlp outtmpl: {full_tmpl}")
 
     ffmpeg_path = detect_ffmpeg_path()
     if not ffmpeg_path:
-        print(Fore.RED + "FFmpeg не найден. Установите его и добавьте в PATH или поместите ffmpeg.exe рядом со скриптом." + Style.RESET_ALL)
-        log_debug("FFmpeg не найден. Выход из download_video.")
+        print(Fore.RED + "FFmpeg не найден – установка обязательна." + Style.RESET_ALL)
         return None
 
-    format_string = video_id
-    if audio_id:
+    # ------------------------------------------------------------------
+    # 1. Формируем строку для --format
+    # ------------------------------------------------------------------
+    if isinstance(video_id, str) and '+' in video_id:
+        # «bestvideo+bestaudio/best» пришёл из choose_format()
+        format_string = video_id
+        log_debug(f"Используем составной формат: {format_string}")
+    elif audio_id:
         format_string = f'{video_id}+{audio_id}'
-        log_debug(f"Выбран формат видео+аудио: {format_string}")
+        log_debug(f"Выбрано два потока: {format_string}")
     else:
-        print(Fore.YELLOW + "Внимание: Отдельный аудиопоток не выбран. Будет загружен только видеопоток, или видеопоток с встроенным звуком, если доступно." + Style.RESET_ALL)
-        log_debug("Отдельный аудиопоток не выбран. Будет загружен только видеопоток, или с встроенным звуком.")
+        format_string = video_id
+        log_debug(f"Выбран один поток: {format_string}")
 
+    # ------------------------------------------------------------------
+    # 2. Базовые опции yt‑dlp
+    # ------------------------------------------------------------------
     ydl_opts = {
-        'format': format_string,
-        'outtmpl': full_output_template,
-        'merge_output_format': merge_format,
-        'quiet': False,
-        'ffmpeg_location': ffmpeg_path,
-        'overwrites': True,
-        'progress_hooks': [],  # Заполним ниже
-        'continuedl': True,
-        'writedescription': False,
-        'writeinfojson': False,
-        'writesubtitles': False,
+        'format':               format_string,
+        'outtmpl':              full_tmpl,
+        'quiet':                False,
+        'ffmpeg_location':      ffmpeg_path,
+        'overwrites':           True,
+        'continuedl':           True,
+        'writedescription':     False,
+        'writeinfojson':        False,
+        'writesubtitles':       False,
+        'merge_output_format':  merge_format,   # ← ВАЖНО: пусть yt‑dlp сам мерджит
+        'progress_hooks':       [],             # добавим ниже
     }
-    
     if cookie_file_path:
         ydl_opts['cookiefile'] = cookie_file_path
-        log_debug(f"download_video: Используем cookiefile: {cookie_file_path}")
-    
+        log_debug(f"Используем cookiefile: {cookie_file_path}")
+
     if subtitle_options:
         ydl_opts.update(subtitle_options)
-        log_debug(f"Опции субтитров добавлены: {subtitle_options}")
-    
+
+    # ------------------------------------------------------------------
+    # 3. progress‑hook, папка, retries
+    # ------------------------------------------------------------------
     os.makedirs(output_path, exist_ok=True)
-    log_debug(f"Убедились, что директория '{output_path}' существует.")
-    
-    max_retries = 3
-    last_downloaded_filename = None  # Переменная для хранения имени конечного файла
-    
-    def progress_hook(d):
-        nonlocal last_downloaded_filename
+    last_file = None
+
+    def phook(d):
+        nonlocal last_file
         if d['status'] == 'finished':
-            last_downloaded_filename = d.get('filename')
-            log_debug(f"Progress hook: Файл завершён и расположен по пути: {last_downloaded_filename}")
-    
-    ydl_opts['progress_hooks'] = [progress_hook]
-    
-    for attempt in range(1, max_retries + 1):
+            last_file = d.get('filename')
+            log_debug(f"Скачан файл: {last_file}")
+
+    ydl_opts['progress_hooks'] = [phook]
+
+    # ------------------------------------------------------------------
+    # 4. Скачиваем (с повторами при timeout)
+    # ------------------------------------------------------------------
+    for attempt in range(1, 4):
         try:
-            log_debug(f"Попытка {attempt}/{max_retries}. Запуск yt-dlp для URL: {url} с опциями: {ydl_opts}")
+            log_debug(f"yt‑dlp попытка {attempt}: {ydl_opts}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.download([url])
-                log_debug(f"Загрузка yt-dlp завершена. Результат info: {info}")
-    
-                if last_downloaded_filename and os.path.exists(last_downloaded_filename):
-                    log_debug(f"Файл успешно скачан: {last_downloaded_filename}")
-                    return last_downloaded_filename
-                else:
-                    # Если по какой-то причине прогресс-хук не сработал, пытаемся найти файл вручную
-                    final_file_name_expected = f"{output_name}.{merge_format}"
-                    final_file_path_expected = os.path.join(output_path, final_file_name_expected)
-                    log_debug(f"Ожидаемый конечный файл: {final_file_path_expected}")
-    
-                    if os.path.exists(final_file_path_expected):
-                        log_debug(f"Файл '{final_file_path_expected}' найден с помощью os.path.exists.")
-                        return final_file_path_expected
-                    else:
-                        log_debug(f"Файл '{final_file_path_expected}' НЕ найден с помощью os.path.exists.")
-                        # Поиск по списку файлов в директории
-                        try:
-                            dir_contents = os.listdir(output_path)
-                            log_debug(f"Содержимое директории '{output_path}': {dir_contents}")
-                            for f_name in dir_contents:
-                                if f_name.lower().startswith(output_name.lower()) and f_name.lower().endswith(f".{merge_format.lower()}"):
-                                    found_file = os.path.join(output_path, f_name)
-                                    log_debug(f"Файл найден через os.listdir: {found_file}")
-                                    return found_file
-                        except Exception as ex:
-                            log_debug(f"Ошибка при попытке os.listdir({output_path}): {ex}")
-                        return None
-    
+                ydl.download([url])
+
+            # yt‑dlp уже склеил – ищем результат
+            cand = last_file or full_tmpl.replace('%(ext)s', merge_format)
+            if os.path.isfile(cand):
+                return cand
+
+            # запасной поиск по директории
+            base = output_name.lower()
+            for fn in os.listdir(output_path):
+                if fn.lower().startswith(base) and fn.lower().endswith('.' + merge_format):
+                    return os.path.join(output_path, fn)
+
+            return None  # ничего не нашли
+
         except DownloadError as e:
-            error_str = str(e)
-            log_debug(f"yt-dlp DownloadError (попытка {attempt}): {error_str}")
-            if "Read timed out" in error_str and attempt < max_retries:
-                print(Fore.YELLOW + f"Временный сбой соединения. Повтор через 3 секунды ({attempt}/{max_retries})..." + Style.RESET_ALL)
+            if "Read timed out" in str(e) and attempt < 3:
+                print(Fore.YELLOW + "Временный тайм‑аут, повтор…" + Style.RESET_ALL)
                 time.sleep(3)
                 continue
-            else:
-                print(Fore.RED + f"Произошла ошибка во время загрузки: {e}" + Style.RESET_ALL)
-                raise
-        except Exception as e:
-            log_debug(f"Непредвиденная ошибка во время загрузки (попытка {attempt}): {str(e)}\n{traceback.format_exc()}")
-            print(Fore.RED + f"Произошла непредвиденная ошибка во время загрузки: {e}" + Style.RESET_ALL)
             raise
 
 def save_chapters_to_file(chapters, path):
