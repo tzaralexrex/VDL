@@ -12,6 +12,8 @@ import traceback
 import http.cookiejar # Для работы с куки-файлами
 import glob
 import time
+import ctypes
+import sys
 
 import browser_cookie3
 from browser_cookie3 import BrowserCookieError
@@ -334,7 +336,7 @@ def safe_get_video_info(url: str, platform: str):
             f"\nВаш сайт ({site_domain}) требует авторизации, а попытки с Google/VK cookies не помогли.\n"
             f"Авторизуйтесь на этом сайте в браузере и сохраните куки в файл "
             f"cookies.txt (Netscape-формат). Затем поместите его рядом со скриптом и повторите попытку.\n"
-            f"Если ничего не помоголо, возможно, ваш сайт просто не поддерживается. Извините.\n"
+            f"Если ничего не помогло, возможно, ваш сайт просто не поддерживается. Извините.\n"
         )
     log_debug(f"generic: авторизация не удалась даже с cookies.txt для {site_domain}")
     sys.exit(1)
@@ -354,7 +356,10 @@ def choose_format(formats):
 
     video_formats.sort(key=lambda f: (f.get("height") or 0,
                                       f.get("format_id", "")))
-    audio_formats.sort(key=lambda f: f.get("abr") or 0)
+    audio_formats.sort(key=lambda f: (
+        f.get("abr") or 0,
+        '-drc' in f.get("format_id", "")
+    ))
 
     # --------------------------------------------------------
     # 1. Потоки-манифесты (DASH / HLS / Smooth Streaming …)
@@ -599,9 +604,21 @@ def ask_and_select_subtitles(info):
 
 def select_output_folder():
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
+    
+    # Сохраняем хэндл активного окна
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    current_thread_id = kernel32.GetCurrentThreadId()
+    foreground_window = user32.GetForegroundWindow()
+    user32.AttachThreadInput(user32.GetWindowThreadProcessId(foreground_window, None), current_thread_id, True)
+
     root = Tk()
     root.withdraw()
     folder = filedialog.askdirectory(title="Выберите папку")
+    root.destroy()
+
+    # Возвращаем фокус обратно к окну
+    user32.SetForegroundWindow(foreground_window)
     return folder
 
 def ask_output_filename(default_name, output_path, output_format):
@@ -683,7 +700,6 @@ def ask_output_filename(default_name, output_path, output_format):
             else:
                 log_debug(f"Введенное имя '{new_full_path}' не существует. Используем его.")
                 return new_name # Введенное имя не существует, используем его
-
 
 def ask_output_format(default_format):
     formats = ['mp4', 'mkv', 'avi', 'webm']
