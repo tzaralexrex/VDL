@@ -1,4 +1,4 @@
-# YouTube & Facebook Video Downloader with Cookie Browser Support
+# Video Downloader with Cookie Browser Support
 
 import os
 import re
@@ -32,6 +32,9 @@ DEBUG_FILE = 'debug.log'
 
 COOKIES_FB = 'cookies_fb.txt'
 COOKIES_YT = 'cookies_yt.txt'
+COOKIES_VI = 'cookies_vi.txt'   # Vimeo
+COOKIES_RT = 'cookies_rt.txt'   # Rutube
+COOKIES_VK = 'cookies_vk.txt'   # VK
 
 debug_file_initialized = False
 
@@ -93,39 +96,57 @@ def log_debug(message):
         with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
             f.write(log_line)
 
+def extract_platform_and_url(raw_url: str):
+    url = raw_url.strip()
 
-def extract_platform_and_url(raw_url):
-    yt_patterns = [r'(?:youtube\.com|youtu\.be)']
-    fb_patterns = [r'(?:facebook\.com|fb\.watch)']
+    patterns = {
+        'youtube':  [r'(?:youtube\.com|youtu\.be)'],
+        'facebook': [r'(?:facebook\.com|fb\.watch)'],
+        'vimeo':    [r'(?:vimeo\.com)'],
+        'rutube':   [r'(?:rutube\.ru)'],
+        'vk':       [r'(?:vk\.com|vkontakte\.ru)'],
+    }
 
-    for pat in yt_patterns:
-        if re.search(pat, raw_url):
-            log_debug(f"Определена платформа: youtube для URL: {raw_url.strip()}")
-            return 'youtube', raw_url.strip()
+    def clean_url_by_platform(platform: str, url: str) -> str:
+        try:
+            if platform == 'facebook':
+                fb_patterns = [
+                    r'/videos/(\d+)',
+                    r'v=(\d+)',
+                    r'/reel/(\d+)',
+                    r'/watch/\?v=(\d+)',
+                    r'/video.php\?v=(\d+)'
+                ]
+                for pattern in fb_patterns:
+                    match = re.search(pattern, url)
+                    if match:
+                        video_id = match.group(1)
+                        return f"https://m.facebook.com/watch/?v={video_id}&_rdr"
+                raise ValueError(Fore.RED + "Не удалось распознать ID видео Facebook" + Style.RESET_ALL)
 
-    for pat in fb_patterns:
-        if re.search(pat, raw_url):
-            cleaned_url = clean_facebook_url(raw_url.strip())
-            log_debug(f"Определена платформа: facebook для URL: {cleaned_url}")
-            return 'facebook', cleaned_url
+            elif platform == 'vk':
+                match = re.search(r'(video[-\d]+_\d+)', url)
+                return f"https://vk.com/{match.group(1)}" if match else url
 
-    raise ValueError(Fore.RED + "Не удалось определить платформу (YouTube или Facebook)" + Style.RESET_ALL)
+            elif platform == 'vimeo':
+                return url.split('#')[0]
 
+            elif platform == 'rutube':
+                return url.split('?')[0]
 
-def clean_facebook_url(raw_url):
-    patterns = [
-        r'/videos/(\d+)',
-        r'v=(\d+)',
-        r'/reel/(\d+)',
-        r'/watch/\?v=(\d+)',
-        r'/video.php\?v=(\d+)'
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, raw_url)
-        if match:
-            video_id = match.group(1)
-            return f"https://m.facebook.com/watch/?v={video_id}&_rdr"
-    raise ValueError(Fore.RED + "Не удалось распознать ID видео Facebook" + Style.RESET_ALL)
+        except Exception as e:
+            log_debug(f"Ошибка при очистке URL для {platform}: {e}")
+        return url
+
+    # перебираем в фиксированном порядке
+    for platform, pats in patterns.items():
+        for pat in pats:
+            if re.search(pat, url, re.I):
+                cleaned_url = clean_url_by_platform(platform, url)
+                log_debug(f"Определена платформа: {platform} для URL: {cleaned_url}")
+                return platform, cleaned_url
+
+    raise ValueError(Fore.RED + "Не удалось определить платформу (YouTube, Facebook, Vimeo, Rutube, VK)" + Style.RESET_ALL)
 
 
 def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
@@ -145,12 +166,12 @@ def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
 
-
 def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: bool = False) -> str | None:
     """
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
     """
+
     # 1. Попытка загрузить куки из существующего файла
     if os.path.exists(cookie_file):
         if not force_browser:
@@ -163,32 +184,38 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
                 log_debug(f"Файл {cookie_file} найден, но не прошёл проверку. Переходим к извлечению из браузера.")
         else:
             print(Fore.CYAN + f"Принудительный режим: пропускаем проверку и извлекаем куки из браузера." + Style.RESET_ALL)
-    
-    # 2. Если файл не существует, попытка извлечь куки из браузера
+
+    # 2. Попытка извлечь куки из браузера
     browsers_to_try = ['chrome', 'firefox']
     browser_functions = {
         'chrome': browser_cookie3.chrome,
         'firefox': browser_cookie3.firefox,
     }
-    
-    print(Fore.YELLOW + f"Примечание: Для автоматического получения куков из браузера (Chrome/Firefox), убедитесь, что он закрыт или неактивен." + Style.RESET_ALL)
 
-    extracted_cj = None # CookieJar object
+    platform_domains = {
+        'youtube':  ['youtube.com', 'google.com'],  # fallback
+        'facebook': ['facebook.com'],
+        'vimeo':    ['vimeo.com'],
+        'rutube':   ['rutube.ru'],
+        'vk':       ['vk.com'],
+    }
+
+    print(Fore.YELLOW + f"Примечание: Для автоматического получения куков из браузера (Chrome/Firefox), "
+          f"убедитесь, что он закрыт или неактивен." + Style.RESET_ALL)
+
+    domains = platform_domains.get(platform, [])
+    extracted_cj = None
+
     for browser in browsers_to_try:
         try:
-            print(Fore.GREEN + f"Пытаемся получить куки для {platform.capitalize()} из вашего браузера ({browser})." + Style.RESET_ALL)
+            print(Fore.GREEN + f"Пытаемся получить куки для {platform.capitalize()} из браузера ({browser})." + Style.RESET_ALL)
             log_debug(f"Попытка получить куки для {platform.capitalize()} из браузера: {browser}")
-            
-            if platform == 'facebook':
-                extracted_cj = browser_functions[browser](domain_name='facebook.com')
-            elif platform == 'youtube':
-                # Для yt-dlp лучше всего указывать основной домен для куков, например, '.youtube.com' или '.google.com'
-                # '.youtube.com' - это невалидный домен для browser_cookie3
-                extracted_cj = browser_functions[browser](domain_name='youtube.com') # Более корректно
-                if not extracted_cj: # Если .youtube.com не сработал, пробуем более общий .google.com
-                    log_debug(f"Куки для .youtube.com не найдены в {browser}. Пробуем .google.com.")
-                    extracted_cj = browser_functions[browser](domain_name='google.com')
 
+            for domain in domains:
+                log_debug(f"Пробуем домен {domain} в {browser}")
+                extracted_cj = browser_functions[browser](domain_name=domain)
+                if extracted_cj:
+                    break
 
             if extracted_cj:
                 print(Fore.GREEN + f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}." + Style.RESET_ALL)
@@ -199,18 +226,20 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
                     print(Fore.RED + "Не удалось сохранить извлеченные куки в файл. Продолжаем без них." + Style.RESET_ALL)
                     log_debug("Не удалось сохранить извлеченные куки в файл.")
                     return None
+
         except BrowserCookieError as e:
             print(Fore.RED + f"Не удалось получить куки из браузера ({browser}) для {platform.capitalize()}: {e}" + Style.RESET_ALL)
             log_debug(f"BrowserCookieError при получении куков из {browser} для {platform.capitalize()}:\n{traceback.format_exc()}")
         except Exception as e:
             print(Fore.RED + f"Произошла непредвиденная ошибка при попытке получить куки из {browser} для {platform.capitalize()}: {e}" + Style.RESET_ALL)
             log_debug(f"Общая ошибка при получении куков из {browser} для {platform.capitalize()}:\n{traceback.format_exc()}")
-    
-    print(Fore.YELLOW + f"Не удалось автоматически получить куки для {platform.capitalize()}. " +
-                        f"Для загрузки приватных видео {platform.capitalize()}, пожалуйста, " +
+
+    print(Fore.YELLOW + f"Не удалось автоматически получить куки для {platform.capitalize()}. "
+                        f"Для загрузки приватных видео {platform.capitalize()}, пожалуйста, "
                         f"экспортируйте куки в файл {cookie_file} вручную (например, с помощью расширения браузера)." + Style.RESET_ALL)
     log_debug(f"Автоматическое получение куков для {platform.capitalize()} не удалось.")
     return None
+
 
 
 def get_video_info(url, platform, cookie_file_path=None):
