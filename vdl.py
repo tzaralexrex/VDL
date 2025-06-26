@@ -1,4 +1,4 @@
-# Video Downloader with Cookie Browser Support
+# Universal Video Downloader with Cookie Browser Support
 
 import os
 import re
@@ -37,6 +37,8 @@ COOKIES_VI = 'cookies_vi.txt'   # Vimeo
 COOKIES_RT = 'cookies_rt.txt'   # Rutube
 COOKIES_VK = 'cookies_vk.txt'   # VK
 COOKIES_GOOGLE = "cookies_google.txt"
+
+MAX_RETRIES = 5  # Максимум попыток повторной загрузки при обрывах
 
 debug_file_initialized = False
 
@@ -363,7 +365,7 @@ def choose_format(formats):
         print(
             Fore.YELLOW
             + f"\nОбнаружен поток-манифест ({best_vid['ext']}). "
-              "Будет скачан bestvideo+bestaudio (или best),"
+              "По умолчанию будет скачан bestvideo+bestaudio (или best),"
               " а объединение выполнит сам yt-dlp."
             + Style.RESET_ALL
         )
@@ -720,7 +722,7 @@ def download_video(
         subtitle_options=None):
     """
     Скачивает (и, при необходимости, сливает) выбранные потоки.
-    Возвращает путь к итоговому файлу либо None.
+    Возвращает путь к итоговому файлу либо None.
     """
     full_tmpl = os.path.join(output_path, output_name + '.%(ext)s')
     log_debug(f"yt‑dlp outtmpl: {full_tmpl}")
@@ -730,46 +732,48 @@ def download_video(
         print(Fore.RED + "FFmpeg не найден – установка обязательна." + Style.RESET_ALL)
         return None
 
-    # ------------------------------------------------------------------
-    # 1. Формируем строку для --format
-    # ------------------------------------------------------------------
-    if isinstance(video_id, str) and '+' in video_id:
-        # «bestvideo+bestaudio/best» пришёл из choose_format()
+    # ---------------- 1. Формируем строку для --format -----------------
+    manifest_mode = False
+    if isinstance(video_id, str) and '+' in video_id:          # bestvideo+bestaudio
         format_string = video_id
+        manifest_mode = True
         log_debug(f"Используем составной формат: {format_string}")
-    elif audio_id:
+    elif audio_id:                                             # отдельное аудио
         format_string = f'{video_id}+{audio_id}'
         log_debug(f"Выбрано два потока: {format_string}")
-    else:
+    else:                                                      # только видео
         format_string = video_id
         log_debug(f"Выбран один поток: {format_string}")
 
-    # ------------------------------------------------------------------
-    # 2. Базовые опции yt‑dlp
-    # ------------------------------------------------------------------
+    # ---------------- 2. Базовые опции yt‑dlp --------------------------
     ydl_opts = {
-        'format':               format_string,
-        'outtmpl':              full_tmpl,
-        'quiet':                False,
-        'ffmpeg_location':      ffmpeg_path,
-        'overwrites':           True,
-        'continuedl':           True,
-        'writedescription':     False,
-        'writeinfojson':        False,
-        'writesubtitles':       False,
-        'merge_output_format':  merge_format,   # ← ВАЖНО: пусть yt‑dlp сам мерджит
-        'progress_hooks':       [],             # добавим ниже
+        'format'           : format_string,
+        'outtmpl'          : full_tmpl,
+        'quiet'            : False,
+        'ffmpeg_location'  : ffmpeg_path,
+        'overwrites'       : True,
+        'continuedl'       : True,
+        'writedescription' : False,
+        'writeinfojson'    : False,
+        'writesubtitles'   : False,
+        'progress_hooks'   : [],      # заполним ниже
     }
+
+    if manifest_mode:                 # DASH/HLS – склейку доверяем yt‑dlp
+        ydl_opts['postprocessors'] = [{'key': 'FFmpegMerger'}]
+        log_debug("Обнаружен поток‑манифест – задействуем FFmpegMerger.")
+    else:
+        ydl_opts['merge_output_format'] = merge_format
+        log_debug(f"merge_output_format = {merge_format}")
+
     if cookie_file_path:
         ydl_opts['cookiefile'] = cookie_file_path
-        log_debug(f"Используем cookiefile: {cookie_file_path}")
+        log_debug(f"cookiefile = {cookie_file_path}")
 
     if subtitle_options:
         ydl_opts.update(subtitle_options)
 
-    # ------------------------------------------------------------------
-    # 3. progress‑hook, папка, retries
-    # ------------------------------------------------------------------
+    # ---------------- 3. progress‑hook & подготовка --------------------
     os.makedirs(output_path, exist_ok=True)
     last_file = None
 
@@ -777,38 +781,56 @@ def download_video(
         nonlocal last_file
         if d['status'] == 'finished':
             last_file = d.get('filename')
-            log_debug(f"Скачан файл: {last_file}")
+            log_debug(f"Файл скачан: {last_file}")
 
     ydl_opts['progress_hooks'] = [phook]
 
-    # ------------------------------------------------------------------
-    # 4. Скачиваем (с повторами при timeout)
-    # ------------------------------------------------------------------
-    for attempt in range(1, 4):
+    # ---------------- 4. Загрузка с повторами --------------------------
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            log_debug(f"yt‑dlp попытка {attempt}: {ydl_opts}")
+            log_debug(f"Запуск yt‑dlp, попытка {attempt}/{MAX_RETRIES}: {ydl_opts}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
-            # yt‑dlp уже склеил – ищем результат
-            cand = last_file or full_tmpl.replace('%(ext)s', merge_format)
-            if os.path.isfile(cand):
-                return cand
+            # ---- поиск итогового файла ----
+            candidate = last_file or full_tmpl.replace('%(ext)s', merge_format)
+            if os.path.isfile(candidate):
+                return candidate
 
-            # запасной поиск по директории
-            base = output_name.lower()
+            base_low = output_name.lower()
             for fn in os.listdir(output_path):
-                if fn.lower().startswith(base) and fn.lower().endswith('.' + merge_format):
+                if fn.lower().startswith(base_low) and fn.lower().endswith('.' + merge_format):
                     return os.path.join(output_path, fn)
 
-            return None  # ничего не нашли
+            return None
 
         except DownloadError as e:
-            if "Read timed out" in str(e) and attempt < 3:
-                print(Fore.YELLOW + "Временный тайм‑аут, повтор…" + Style.RESET_ALL)
-                time.sleep(3)
+            err = str(e)
+            retriable = any(key in err for key in (
+                "Got error:",           # обрыв потока
+                "read,",
+                "Read timed out",
+                "retry",
+                "HTTP Error 5",
+            ))
+
+            log_debug(f"DownloadError: {err} (retriable={retriable})")
+
+            if retriable and attempt < MAX_RETRIES:
+                print(Fore.YELLOW + f"Обрыв загрузки (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…"
+                      + Style.RESET_ALL)
+                log_debug("Повторная попытка после обрыва.")
+                time.sleep(5)
                 continue
+            else:
+                raise
+
+        except Exception as e:
+            # Любая другая ошибка – пробрасываем после логирования
+            log_debug(f"Непредвиденная ошибка (попытка {attempt}): {e}\n{traceback.format_exc()}")
             raise
+
+    return None  # если вышли из цикла без успеха
 
 def save_chapters_to_file(chapters, path):
     try:
@@ -829,23 +851,6 @@ def save_chapters_to_file(chapters, path):
         print(Fore.RED + f"Ошибка при сохранении файла глав (ffmetadata): {e}" + Style.RESET_ALL)
         log_debug(f"Ошибка сохранения файла глав (ffmetadata): {e}")
         return False
-
-"""
-def save_chapters_to_file(chapters, path):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            for i, ch in enumerate(chapters, 1):
-                title = ch.get("title", f"Глава {i}")
-                start = int(ch.get("start_time", 0))
-                mins, secs = divmod(start, 60)
-                f.write(f"{mins:02}:{secs:02} {title}\n")
-        log_debug(f"Файл глав сохранён: {path}")
-        return True
-    except Exception as e:
-        print(Fore.RED + f"Ошибка при сохранении файла глав: {e}" + Style.RESET_ALL)
-        log_debug(f"Ошибка сохранения файла глав: {e}")
-        return False
-"""
 
 def main():
     print(Fore.YELLOW + "Universal Video Downloader")
@@ -868,6 +873,25 @@ def main():
         log_debug(f"Наличие глав: {has_chapters}")
 
         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
+
+        # --- если обнаружен поток-манифест, предложим выбор качества
+        if video_id == "bestvideo+bestaudio/best":
+            quality_map = {
+                "0": ("bestvideo+bestaudio/best", "Максимальное"),
+                "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+            }
+
+            print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
+            for key, (_, label) in quality_map.items():
+                print(f"{key}: {label}")
+            choice = input(Fore.CYAN + "Номер (Enter = 0): " + Style.RESET_ALL).strip() or "0"
+            selected = quality_map.get(choice, quality_map["0"])
+            video_id = selected[0]
+            log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
+
         subtitle_download_options = ask_and_select_subtitles(info)
 
         # --- Главы: спросим про сохранение до выбора папки
