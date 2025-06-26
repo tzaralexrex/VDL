@@ -28,7 +28,6 @@ init(autoreset=True)  # инициализация colorama и автомати�
 DEBUG = 1 # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
-CONFIG_FILE = 'vdl_conf.json'
 DEBUG_FILE = 'debug.log'
 
 COOKIES_FB = 'cookies_fb.txt'
@@ -93,19 +92,6 @@ def log_debug(message):
     else:
         with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
             f.write(log_line)
-
-
-def get_last_folder():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
-            return config.get('last_folder', os.path.join(os.environ['USERPROFILE'], 'Videos'))
-    return os.path.join(os.environ['USERPROFILE'], 'Videos')
-
-
-def save_last_folder(folder_path):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump({'last_folder': folder_path}, f)
 
 
 def extract_platform_and_url(raw_url):
@@ -272,6 +258,7 @@ def safe_get_video_info(url: str, platform: str):
                 sys.exit(1)
 
 
+
 def choose_format(formats):
     video_formats = [f for f in formats if f.get('vcodec') != 'none']
     audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
@@ -297,8 +284,10 @@ def choose_format(formats):
 
     audio_fmt = None
     if not audio_formats:
-        print(Fore.YELLOW + "\nДоступные аудиоформаты: Отдельные аудиопотоки отсутствуют. Видео, вероятно, содержит встроенный звук." + Style.RESET_ALL)
-        input(Fore.CYAN + "Нажмите Enter для продолжения (аудиопоток будет выбран автоматически, если он встроен): " + Style.RESET_ALL)
+        print(Fore.YELLOW + "\nДоступные аудиоформаты: Отдельные аудиопотоки отсутствуют. "
+              "Видео, вероятно, содержит встроенный звук." + Style.RESET_ALL)
+        input(Fore.CYAN + "Нажмите Enter для продолжения (аудиопоток будет выбран автоматически, если он встроен): "
+              + Style.RESET_ALL)
         log_debug("Отдельные аудиоформаты отсутствуют. Будет выбран встроенный аудиопоток, если доступно.")
     else:
         print("\n" + Fore.MAGENTA + "Доступные аудиоформаты:" + Style.RESET_ALL)
@@ -309,11 +298,44 @@ def choose_format(formats):
             acodec = f.get('acodec', '?')
             print(f"{i}: {fmt_id} - {ext} - {abr}kbps - {acodec}")
 
-        default_audio = len(audio_formats) - 1
-        a_choice = input(Fore.CYAN + f"Выберите аудиоформат (по умолчанию {default_audio}): " + Style.RESET_ALL).strip()
-        a_choice = int(a_choice) if a_choice.isdigit() and 0 <= int(a_choice) < len(audio_formats) else default_audio
-        audio_fmt = audio_formats[a_choice]
-        log_debug(f"Выбран аудиоформат ID: {audio_fmt['format_id']}, Ext: {audio_fmt.get('ext', '')}, Codec: {audio_fmt.get('acodec', '')}")
+        # Подсказка по совместимости контейнеров
+        print(Fore.YELLOW +
+              f"\nДля видео {video_fmt['ext'].upper()} выбирайте аудио с тем же или соответствующим расширением "
+              f"({'m4a' if video_fmt['ext']=='mp4' else 'webm'})." + Style.RESET_ALL)
+
+        # Подбор первого совместимого по расширению
+        expected_audio_ext = 'm4a' if video_fmt['ext'] == 'mp4' else 'webm'
+        default_audio = None
+        for i, f in enumerate(audio_formats):
+            if f.get('ext') == expected_audio_ext:
+                default_audio = i
+                break
+        if default_audio is None:
+            default_audio = len(audio_formats) - 1  # fallback
+
+        # Цикл выбора с проверкой совместимости
+        while True:
+            a_choice = input(Fore.CYAN + f"Выберите аудиоформат (по умолчанию {default_audio}): "
+                             + Style.RESET_ALL).strip()
+            a_choice = int(a_choice) if a_choice.isdigit() and 0 <= int(a_choice) < len(audio_formats) else default_audio
+            audio_fmt = audio_formats[a_choice]
+
+            audio_ext = audio_fmt.get('ext', '')
+            video_ext = video_fmt['ext']
+
+            incompatible = (
+                (video_ext == 'mp4'  and audio_ext != 'm4a') or
+                (video_ext == 'webm' and audio_ext != 'webm')
+            )
+
+            if incompatible:
+                print(Fore.RED + f"Несовместимо: видео {video_ext} - аудио {audio_ext}. "
+                      f"Выберите другой аудиоформат." + Style.RESET_ALL)
+                continue  # повтор запроса
+            break  # совместимо – выходим из цикла
+
+        log_debug(f"Выбран аудиоформат ID: {audio_fmt['format_id']}, Ext: {audio_fmt.get('ext', '')}, "
+                  f"Codec: {audio_fmt.get('acodec', '')}")
 
     # Возвращаем все параметры для mux
     return (
@@ -325,6 +347,7 @@ def choose_format(formats):
         video_fmt.get('vcodec', ''),
         audio_fmt.get('acodec', '') if audio_fmt else ''
     )
+
 
 def ask_and_select_subtitles(info):
     subtitles_info = info.get('subtitles') or {}
@@ -443,21 +466,12 @@ def ask_and_select_subtitles(info):
         'subtitlesformat': sub_format
     }
 
-
 def select_output_folder():
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
     root = Tk()
     root.withdraw()
-    initial_dir = get_last_folder()
-    log_debug(f"Диалог выбора папки: Начальная директория: {initial_dir}")
-    folder = filedialog.askdirectory(initialdir=initial_dir, title="Выберите папку")
-    if folder:
-        save_last_folder(folder)
-        log_debug(f"Выбрана папка для сохранения: {folder}")
-        return folder
-    log_debug(f"Папка не выбрана, использована последняя/дефолтная: {initial_dir}")
-    return initial_dir
-
+    folder = filedialog.askdirectory(title="Выберите папку")
+    return folder
 
 def ask_output_filename(default_name, output_path, output_format):
     """
@@ -711,9 +725,9 @@ def main():
         
             print(Fore.CYAN +
                   "\nКакие субтитры интегрировать в итоговый MKV?"
-                  "\n  • Введите номера или коды языков (через запятую или пробел)."
-                  "\n  • Enter, 0 или all — интегрировать ВСЕ."
-                  "\n  • «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
+                  "\n  Введите номера или коды языков (через запятую или пробел)."
+                  "\n  Enter, 0 или all — интегрировать ВСЕ."
+                  "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
         
             for idx, lang in enumerate(available_langs, 1):
                 print(f"{idx}: {lang}")
