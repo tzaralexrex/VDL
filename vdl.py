@@ -1,40 +1,67 @@
 # Universal Video Downloader with Cookie Browser Support
 
+import sys
+import subprocess
+import importlib
 import os
 import re
-import sys
-import json
-import time
-import glob
 import shutil
+import time
 import ctypes
-import tempfile
+import json
 import threading
-import subprocess
+import tempfile
+import argparse
+import logging
 import traceback
-import http.cookiejar  # Для работы с куки-файлами
-from datetime import datetime
-from urllib.parse import urlparse
+import http.cookiejar
+import glob
 from pathlib import Path
-
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-
-import queue
-import pyperclip
-
-import yt_dlp
-from yt_dlp.utils import DownloadError  # Импортируем специфическую ошибку yt-dlp
-
-import browser_cookie3
-from browser_cookie3 import BrowserCookieError
-
+from datetime import datetime
 from shutil import which
+
+def import_or_install(package, import_name=None, pip_name=None, silent=False):
+    """Пробует импортировать пакет, если не удаётся — предлагает установить через pip.
+    package: строка для import
+    import_name: строка для импорта, если отличается от pip_name
+    pip_name: название пакета в pip (если отличается)
+    silent: если True — не спрашивать пользователя, сразу пытаться установить
+    """
+    try:
+        return importlib.import_module(import_name or package)
+    except ImportError:
+        pip_name = pip_name or package
+        print(f"[!] Необходим внешний модуль: {pip_name}")
+        if not silent:
+            answer = input(f"→ Установить {pip_name} через pip сейчас? [Y/n]: ").strip().lower()
+            if answer and answer not in ('y', 'д', ''):
+                print(f"Пожалуйста, установите пакет вручную: pip install {pip_name}")
+                sys.exit(1)
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+        except Exception as e:
+            print(f"Ошибка установки {pip_name}: {e}\nУстановите пакет вручную: pip install {pip_name}")
+            sys.exit(1)
+        # Повторный импорт
+        return importlib.import_module(import_name or package)
+
+yt_dlp = import_or_install('yt_dlp')
+browser_cookie3 = import_or_install('browser_cookie3')
+colorama = import_or_install('colorama')
+
+from yt_dlp.utils import DownloadError
+from browser_cookie3 import BrowserCookieError
 from colorama import init, Fore, Style
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except ImportError:
+    tk = None
 
 init(autoreset=True)  # инициализация colorama и автоматический сброс цвета после каждого print
 
-DEBUG = 1 # Глобальная переменная для включения/выключения отладки
+DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
 DEBUG_FILE = 'debug.log'
@@ -49,23 +76,6 @@ COOKIES_GOOGLE = "cookies_google.txt"
 MAX_RETRIES = 5  # Максимум попыток повторной загрузки при обрывах
 
 debug_file_initialized = False
-
-def extract_ffmpeg_if_needed():
-    """
-    Извлекает ffmpeg.exe из ресурсов PyInstaller во временную папку,
-    если используется сборка --onefile. Возвращает путь к ffmpeg.
-    """
-    if getattr(sys, 'frozen', False):
-        ffmpeg_src = os.path.join(sys._MEIPASS, 'ffmpeg.exe')
-        ffmpeg_dst = os.path.join(tempfile.gettempdir(), 'ffmpeg_embedded.exe')
-        try:
-            shutil.copy2(ffmpeg_src, ffmpeg_dst)
-            log_debug(f"ffmpeg извлечён во временную папку: {ffmpeg_dst}")
-        except Exception as e:
-            print(Fore.RED + f"Ошибка при извлечении ffmpeg: {e}" + Style.RESET_ALL)
-            log_debug(f"Ошибка при извлечении ffmpeg: {e}")
-        return ffmpeg_dst
-    return None
 
 def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
     """
@@ -89,7 +99,6 @@ def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
     except Exception:
         return False
 
-
 def detect_ffmpeg_path():
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     local_path = os.path.join(script_dir, "ffmpeg.exe")
@@ -97,28 +106,12 @@ def detect_ffmpeg_path():
     if os.path.isfile(local_path):
         log_debug(f"FFmpeg найден по локальному пути: {local_path}")
         return local_path
-
-    # Проверяем временный путь, куда мог быть распакован ffmpeg
-    temp_embedded = os.path.join(tempfile.gettempdir(), 'ffmpeg_embedded.exe')
-    if os.path.isfile(temp_embedded):
-        log_debug(f"FFmpeg найден во временной папке: {temp_embedded}")
-        return temp_embedded
-
     system_path = which("ffmpeg")
     log_debug(f"Поиск ffmpeg: Проверяем системный PATH: {system_path}")
     if system_path and os.path.isfile(system_path):
         log_debug(f"FFmpeg найден в системном PATH: {system_path}")
         return system_path
-
-    # Поддержка встроенного ffmpeg в PyInstaller (если есть)
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        embedded_path = os.path.join(sys._MEIPASS, "ffmpeg.exe")
-        log_debug(f"Поиск ffmpeg: Проверяем встроенный путь (PyInstaller): {embedded_path}")
-        if os.path.isfile(embedded_path):
-            log_debug(f"FFmpeg найден во встроенной папке PyInstaller: {embedded_path}")
-            return embedded_path
-
-    log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH, ни во встроенной папке, ни во временной папке.")
+    log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH.")
     return None
 
 def log_debug(message):
@@ -315,25 +308,21 @@ def safe_get_video_info(url: str, platform: str):
         "vk":       COOKIES_VK,
     }
 
-    cookies_updated = False
-
+    # Платформы, которые явно поддерживаются
     if platform in cookie_map:
         cookie_path = cookie_map[platform]
         current_cookie = get_cookies_for_platform(platform, cookie_path)
 
         for attempt in ("file", "browser", "none"):
             try:
-                info = get_video_info(url, platform, current_cookie if attempt != "none" else None)
-                info["cookies_updated"] = cookies_updated
-                return info
+                return get_video_info(url, platform, current_cookie if attempt != "none" else None)
             except DownloadError as err:
                 err_l = str(err).lower()
-                need_login = any(x in err_l for x in ("login", "403", "private", "sign in", "unauthorized", "too many requests", "429"))
+                need_login = any(x in err_l for x in ("login", "403", "private", "sign in", "unauthorized"))
                 if not need_login:
                     raise
                 if attempt == "file":
                     current_cookie = get_cookies_for_platform(platform, cookie_path, force_browser=True)
-                    cookies_updated = True
                 elif attempt == "browser":
                     current_cookie = None
                 else:
@@ -342,33 +331,48 @@ def safe_get_video_info(url: str, platform: str):
                     sys.exit(1)
 
     else:
-        fallback_cookies = [COOKIES_GOOGLE, COOKIES_VK, "cookies.txt"]
-
-        for cookie_file in fallback_cookies + [None]:
+        # ----- generic -----
+        # порядок попыток: Google‑куки → VK‑куки → пользовательский cookies.txt → без куков
+        fallback_cookies = [
+            COOKIES_GOOGLE,      # cookies_google.txt
+            COOKIES_VK,          # cookies_vk.txt
+            "cookies.txt",       # универсальное имя
+        ]
+    
+        for cookie_file in fallback_cookies + [None]:          # None = без куков
             if cookie_file and not Path(cookie_file).is_file():
+                # файла нет — пропускаем тихо
                 continue
             try:
-                cookie_path = cookie_file if cookie_file else None
-                log_debug(f"generic: пробуем {'без куков' if cookie_path is None else f'куки «{cookie_path}»'}")
-                info = get_video_info(url, platform, cookie_path)
-                info["cookies_updated"] = False
-                return info
+                if cookie_file:
+                    log_debug(f"generic: пробуем куки «{cookie_file}»")
+                    cookie_path = cookie_file                  # берём файл как есть, без проверки домена
+                else:
+                    log_debug("generic: пробуем без куков")
+                    cookie_path = None
+    
+                return get_video_info(url, platform, cookie_path)
+    
             except DownloadError as err:
                 err_l = str(err).lower()
-                need_login = any(x in err_l for x in ("login", "403", "private", "sign in", "unauthorized", "too many requests", "429"))
+                need_login = any(x in err_l for x in
+                                 ("login", "403", "private", "sign in", "unauthorized"))
                 if not need_login:
-                    raise
-                continue
-
+                    raise          # ошибка не про авторизацию → пробрасываем
+                continue           # иначе переходим к след. cookie‑файлу
+    
+        # --- все попытки провалились ---
+        from urllib.parse import urlparse
         site_domain = urlparse(url).hostname or "неизвестный-домен"
+    
         print(
             f"\nВаш сайт ({site_domain}) требует авторизации, а попытки с Google/VK cookies не помогли.\n"
             f"Авторизуйтесь на этом сайте в браузере и сохраните куки в файл "
             f"cookies.txt (Netscape-формат). Затем поместите его рядом со скриптом и повторите попытку.\n"
             f"Если ничего не помогло, возможно, ваш сайт просто не поддерживается. Извините.\n"
         )
-        log_debug(f"generic: авторизация не удалась даже с cookies.txt для {site_domain}")
-        sys.exit(1)
+    log_debug(f"generic: авторизация не удалась даже с cookies.txt для {site_domain}")
+    sys.exit(1)
 
 
 def choose_format(formats):
@@ -641,7 +645,7 @@ def select_output_folder():
     foreground_window = user32.GetForegroundWindow()
     user32.AttachThreadInput(user32.GetWindowThreadProcessId(foreground_window, None), current_thread_id, True)
 
-    root = Tk()
+    root = tk.Tk()
     root.withdraw()
     folder = filedialog.askdirectory(title="Выберите папку")
     root.destroy()
@@ -764,8 +768,7 @@ def download_video(
         output_path, output_name,
         merge_format, platform,
         cookie_file_path=None,
-        subtitle_options=None,
-        formats_full=None):
+        subtitle_options=None):
     """
     Скачивает (и, при необходимости, сливает) выбранные потоки.
     Возвращает путь к итоговому файлу либо None.
@@ -778,22 +781,7 @@ def download_video(
         print(Fore.RED + "FFmpeg не найден – установка обязательна." + Style.RESET_ALL)
         return None
 
-    # ---------------- 1. Проверка: video_id уже содержит аудио? --------
-    if formats_full:
-        video_info = next((f for f in formats_full if f.get("format_id") == video_id), None)
-        if video_info:
-            vcodec = video_info.get("vcodec", "none")
-            acodec = video_info.get("acodec", "none")
-            if vcodec != "none" and acodec != "none":
-                log_debug(f"Формат {video_id} содержит и видео, и аудио — игнорируем audio_id.")
-                audio_id = None
-                # уточнение расширения для одиночного потока
-                ext_info = video_info
-                if ext_info.get("ext"):
-                    merge_format = ext_info["ext"]
-                    log_debug(f"Формат содержит встроенное аудио, установлено расширение: {merge_format}")
-
-    # ---------------- 2. Формируем строку для --format -----------------
+    # ---------------- 1. Формируем строку для --format -----------------
     manifest_mode = False
     if isinstance(video_id, str) and '+' in video_id:          # bestvideo+bestaudio
         format_string = video_id
@@ -806,7 +794,7 @@ def download_video(
         format_string = video_id
         log_debug(f"Выбран один поток: {format_string}")
 
-    # ---------------- 3. Базовые опции yt‑dlp --------------------------
+    # ---------------- 2. Базовые опции yt‑dlp --------------------------
     ydl_opts = {
         'format'           : format_string,
         'outtmpl'          : full_tmpl,
@@ -820,14 +808,12 @@ def download_video(
         'progress_hooks'   : [],      # заполним ниже
     }
 
-    if manifest_mode:
+    if manifest_mode:                 # DASH/HLS – склейку доверяем yt‑dlp
         ydl_opts['postprocessors'] = [{'key': 'FFmpegMerger'}]
         log_debug("Обнаружен поток‑манифест – задействуем FFmpegMerger.")
-    elif audio_id:  # если указан отдельный аудиотрек
+    else:
         ydl_opts['merge_output_format'] = merge_format
         log_debug(f"merge_output_format = {merge_format}")
-    else:
-        log_debug("Видео содержит встроенное аудио – merge_output_format не требуется.")
 
     if cookie_file_path:
         ydl_opts['cookiefile'] = cookie_file_path
@@ -836,7 +822,7 @@ def download_video(
     if subtitle_options:
         ydl_opts.update(subtitle_options)
 
-    # ---------------- 4. progress‑hook & подготовка --------------------
+    # ---------------- 3. progress‑hook & подготовка --------------------
     os.makedirs(output_path, exist_ok=True)
     last_file = None
 
@@ -848,7 +834,7 @@ def download_video(
 
     ydl_opts['progress_hooks'] = [phook]
 
-    # ---------------- 5. Загрузка с повторами --------------------------
+    # ---------------- 4. Загрузка с повторами --------------------------
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log_debug(f"Запуск yt‑dlp, попытка {attempt}/{MAX_RETRIES}: {ydl_opts}")
@@ -856,28 +842,25 @@ def download_video(
                 ydl.download([url])
 
             # ---- поиск итогового файла ----
-            if last_file and os.path.isfile(last_file):
-                log_debug(f"Файл найден: {last_file}")
-                return last_file
-
-            candidate = full_tmpl.replace('%(ext)s', merge_format)
+            candidate = last_file or full_tmpl.replace('%(ext)s', merge_format)
             if os.path.isfile(candidate):
-                log_debug(f"Файл найден: {candidate}")
                 return candidate
 
             base_low = output_name.lower()
             for fn in os.listdir(output_path):
                 if fn.lower().startswith(base_low) and fn.lower().endswith('.' + merge_format):
-                    found = os.path.join(output_path, fn)
-                    log_debug(f"Файл найден в каталоге: {found}")
-                    return found
+                    return os.path.join(output_path, fn)
 
             return None
 
         except DownloadError as e:
             err = str(e)
             retriable = any(key in err for key in (
-                "Got error:", "read,", "Read timed out", "retry", "HTTP Error 5",
+                "Got error:",           # обрыв потока
+                "read,",
+                "Read timed out",
+                "retry",
+                "HTTP Error 5",
             ))
 
             log_debug(f"DownloadError: {err} (retriable={retriable})")
@@ -892,10 +875,11 @@ def download_video(
                 raise
 
         except Exception as e:
+            # Любая другая ошибка – пробрасываем после логирования
             log_debug(f"Непредвиденная ошибка (попытка {attempt}): {e}\n{traceback.format_exc()}")
             raise
 
-    return None
+    return None  # если вышли из цикла без успеха
 
 def save_chapters_to_file(chapters, path):
     try:
@@ -917,95 +901,23 @@ def save_chapters_to_file(chapters, path):
         log_debug(f"Ошибка сохранения файла глав (ffmetadata): {e}")
         return False
 
-def analyze_url_for_gui(raw_url):
-    """
-    Анализирует ссылку, используя логику основного скрипта.
-    Возвращает словарь с данными: платформа, URL, cookie_file, id, info, форматы, субтитры, главы, заголовок,
-    а также флаг, указывающий, были ли обновлены куки.
-    """
-
-    url = raw_url.strip()
-    platform, clean_url = extract_platform_and_url(url)
-    if not platform:
-        raise ValueError("Не удалось определить платформу по ссылке.")
-
-    # Получаем инфо о видео с помощью безопасной функции, которая сама обновляет куки при необходимости
-    info = safe_get_video_info(clean_url, platform)
-
-    cookie_file_to_use = None
-    cookie_map = {
-        "youtube":  COOKIES_YT,
-        "facebook": COOKIES_FB,
-        "vimeo":    COOKIES_VI,
-        "rutube":   COOKIES_RT,
-        "vk":       COOKIES_VK,
-    }
-    if platform in cookie_map:
-        cookie_file_to_use = cookie_map[platform]
-
-    video_id = info.get('id')
-    formats = info.get("formats", [])
-    subtitles = info.get("subtitles", {})
-    chapters = info.get("chapters", [])
-    title = info.get("title", "video")
-
-    video_formats_list = []
-    audio_formats_list = []
-
-    for f in formats:
-        fmt_str = f.get('format_note') or f.get('format_id') or 'unknown'
-        height = f.get('height')
-        acodec = f.get('acodec')
-        vcodec = f.get('vcodec')
-        fps = f.get('fps')
-        ext = f.get('ext')
-
-        desc = f"{fmt_str}"
-        if height:
-            desc += f" {height}p"
-        if fps:
-            desc += f" {fps}fps"
-        desc += f" ({vcodec}/{acodec})"
-        desc += f" [{ext}]"
-
-        if vcodec != 'none' and acodec == 'none':
-            video_formats_list.append(desc)
-        elif acodec != 'none' and vcodec == 'none':
-            audio_formats_list.append(desc)
-        else:
-            video_formats_list.append(desc)
-
-    subtitle_langs = list(subtitles.keys()) if subtitles else []
-
-    auto_subs = []
-    if info.get('automatic_captions'):
-        auto_subs = list(info['automatic_captions'].keys())
-
-    # Флаг, показывающий, обновлялись ли куки в процессе
-    cookies_updated = info.get("cookies_updated", False)
-
-    return {
-        "platform": platform,
-        "url": clean_url,
-        "cookie_file": cookie_file_to_use,
-        "video_id": video_id,
-        "info": info,
-        "video_formats": video_formats_list,
-        "audio_formats": audio_formats_list,
-        "subtitles": subtitle_langs,
-        "auto_subtitles": auto_subs,
-        "chapters": chapters,
-        "title": title,
-        "cookies_updated": cookies_updated,
-        "formats_full": formats,
-
-    }
-
 def main():
-    # Если запускаем как exe с PyInstaller --onefile, извлечём ffmpeg
-    extract_ffmpeg_if_needed()
-
     print(Fore.YELLOW + "Universal Video Downloader")
+
+    # Проверка наличия ffmpeg
+    ffmpeg_path = detect_ffmpeg_path()
+    if not ffmpeg_path:
+        print(
+            "\nДля работы необходима утилита ffmpeg.\n"
+            "Скачайте архив отсюда:\n"
+            "  https://www.gyan.dev/ffmpeg/builds/\n"
+            "или отсюда:\n"
+            "  https://github.com/BtbN/FFmpeg-Builds/releases\n"
+            "Извлеките из подпапки \\bin\\ ffmpeg.exe в папку рядом со скриптом\n"
+            "или поместите ffmpeg в системный путь PATH.\n"
+        )
+        sys.exit(1)
+
     raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
     log_debug(f"Введена ссылка: {raw_url}")
 
@@ -1270,593 +1182,5 @@ def main():
     finally:
         log_debug("Завершение работы скрипта.")
 
-
-class VDL_GUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Universal Video Downloader GUI")
-        self.geometry("900x700")
-
-        self.last_save_dir = os.getcwd()
-        self.chapters_available = False
-
-        self.create_widgets()
-        self.queue = queue.Queue()
-        self.after(100, lambda: self.url_entry.focus_set())
-
-
-    def enable_copy_shortcut(self, text_widget):
-        def copy(event=None):
-            try:
-                text_widget.event_generate("<<Copy>>")
-            except Exception:
-                pass
-            return "break"
-        text_widget.bind("<Control-c>", copy)
-        text_widget.bind("<Control-C>", copy)
-
-    def create_widgets(self):
-        self.url_label = ttk.Label(self, text="Ссылка на видео:")
-        self.url_label.grid(row=0, column=0, sticky="w", padx=5, pady=5)
-    
-        self.url_entry = ttk.Entry(self, width=80)
-        self.url_entry.grid(row=0, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
-    
-        self.btn_paste = ttk.Button(self, text="Вставить из буфера", command=self.paste_from_clipboard)
-        self.btn_paste.grid(row=0, column=4, padx=5, pady=5)
-    
-        self.btn_analyze = ttk.Button(self, text="Анализ", command=self.analyze_link)
-        self.btn_analyze.grid(row=0, column=5, padx=5, pady=5)
-    
-        ttk.Label(self, text="Видео форматы:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-        self.video_format_combo = ttk.Combobox(self, state='disabled')
-
-        # Расширяем на всю ширину с 1 по 5 колонку
-        self.video_format_combo.grid(row=1, column=1, columnspan=5, sticky="ew", padx=5, pady=5)
-        self.video_format_combo.bind("<<ComboboxSelected>>", self.on_video_format_change)
-    
-        ttk.Label(self, text="Аудио форматы:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        self.audio_format_combo = ttk.Combobox(self, state='disabled')
-        self.audio_format_combo.grid(row=2, column=1, columnspan=5, sticky="ew", padx=5, pady=5)
-    
-        ttk.Label(self, text="Субтитры (выберите\nнужные для сохранения):").grid(row=3, column=0, sticky="nw", padx=5, pady=5)
-        self.subtitle_listbox = tk.Listbox(self, height=5, selectmode=tk.MULTIPLE)
-        self.subtitle_listbox.grid(row=3, column=1, columnspan=5, sticky="ew", padx=5, pady=5)
-    
-        ttk.Label(self, text="Автоматические субтитры:\n(оставьте нужные\nкоды для сохранения)").grid(row=4, column=0, sticky="w", padx=5, pady=5)
-        self.auto_subs_entry = ttk.Entry(self, state='disabled')
-        self.auto_subs_entry.grid(row=4, column=1, columnspan=5, sticky="ew", padx=5, pady=5)
-        self.enable_shortcuts(self.auto_subs_entry)
-        self.add_context_menu(self.auto_subs_entry, is_text=True)
-    
-        self.chapters_var = tk.BooleanVar()
-        self.chapters_check = ttk.Checkbutton(self, text="Сохранить главы", variable=self.chapters_var, state='disabled')
-        self.chapters_check.grid(row=5, column=1, sticky="w", padx=5, pady=5)
-    
-        ttk.Label(self, text="Имя видео:").grid(row=6, column=0, sticky="w", padx=5, pady=5)
-        self.video_name_entry = ttk.Entry(self)
-        self.video_name_entry.grid(row=6, column=1, columnspan=5, sticky="ew", padx=5, pady=5)
-        self.enable_shortcuts(self.video_name_entry)
-        self.add_context_menu(self.video_name_entry, is_text=True)
-    
-        # После self.video_name_entry
-        ttk.Label(self, text="Выходной формат:").grid(row=7, column=0, sticky="w", padx=5, pady=5)
-        self.output_format_combo = ttk.Combobox(self, state='readonly', values=["mp4", "mkv", "avi", "webm"], width=7)
-        self.output_format_combo.grid(row=7, column=1, sticky="w", padx=5, pady=5)
-    
-        # Чекбоксы встраивания рядом, в той же строке
-        self.embed_subs_var = tk.BooleanVar(value=False)
-        self.embed_subs_check = ttk.Checkbutton(self, text="Встроить субтитры", variable=self.embed_subs_var, state='disabled')
-        self.embed_subs_check.grid(row=7, column=2, sticky="w", padx=5, pady=5)
-    
-        self.embed_chapters_var = tk.BooleanVar(value=False)
-        self.embed_chapters_check = ttk.Checkbutton(self, text="Встроить главы", variable=self.embed_chapters_var, state='disabled')
-        self.embed_chapters_check.grid(row=7, column=3, sticky="w", padx=5, pady=5)
-    
-        self.output_format_combo.bind("<<ComboboxSelected>>", self.on_output_format_change)
-    
-        self.download_button = ttk.Button(self, text="Скачать видео", command=self.on_download_click)
-        self.download_button.grid(row=8, column=1, columnspan=5, sticky="ew", padx=5, pady=10)
-
-        self.log_text = tk.Text(self, height=15)
-        self.log_text.grid(row=9, column=0, columnspan=7, sticky="nsew", padx=5, pady=5)
-    
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(9, weight=1)
-    
-        self.log_text.bind("<Control-c>", self.copy_log_text)
-    
-        self.enable_shortcuts(self.url_entry)
-        self.add_context_menu(self.url_entry, is_text=True)
-        self.enable_shortcuts(self.log_text)
-        self.add_context_menu(self.log_text, is_text=False)
-
-    def paste_from_clipboard(self):
-        try:
-            text = pyperclip.paste()
-            self.url_entry.delete(0, tk.END)
-            self.url_entry.insert(0, text)
-            self.log("Вставлено из буфера обмена.")
-            self.analyze_link()
-        except Exception as e:
-            self.log(f"Ошибка при вставке из буфера: {e}")
-
-    def analyze_link(self):
-        url = self.url_entry.get().strip()
-        if not url:
-            messagebox.showwarning("Внимание", "Поле ссылки пустое.")
-            return
-        self.log(f"Начинаем анализ ссылки: {url}")
-        self.btn_analyze.config(state='disabled')
-        threading.Thread(target=self.threaded_analyze, args=(url,), daemon=True).start()
-
-    def threaded_analyze(self, url):
-        try:
-            data = analyze_url_for_gui(url)
-    
-            self.platform = data.get("platform")  # Устанавливаем platform для использования в дальнейшем
-    
-            self.populate_from_analysis(data)
-            self.log("Анализ завершён.")
-        except Exception as e:
-            self.log(f"Ошибка анализа: {e}")
-        finally:
-            self.btn_analyze.config(state='normal')
-
-    def populate_from_analysis(self, data):
-        self.formats_full = data.get('formats_full', [])
-
-        # Заполняем список аудио форматов
-        self.audio_formats_all = []
-        for f in self.formats_full:
-            if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
-                fmt_str = f.get('format_note') or f.get('format_id') or 'unknown'
-                abr = f.get('abr') or 0
-                acodec = f.get('acodec')
-                ext = f.get('ext')
-    
-                self.audio_formats_all.append({
-                    "desc_raw": fmt_str,
-                    "abr": abr,
-                    "acodec": acodec,
-                    "ext": ext
-                })
-    
-        # Сначала видео
-        video_formats = data.get('video_formats') or []
-        self.video_format_combo['values'] = video_formats
-    
-        best_video_desc = None
-        max_height = -1
-        selected_video_ext = None
-        for f in self.formats_full:
-            if f.get('vcodec') != 'none' and f.get('acodec') == 'none':
-                height = f.get('height') or 0
-                fmt_str = f.get('format_note') or f.get('format_id') or 'unknown'
-                fps = f.get('fps')
-                vcodec = f.get('vcodec')
-                ext = f.get('ext')
-                acodec = f.get('acodec')
-    
-                desc = fmt_str
-                if height:
-                    desc += f" {height}p"
-                if fps:
-                    desc += f" {fps}fps"
-                desc += f" ({vcodec}/{acodec})"
-                desc += f" [{ext}]"
-    
-                if height > max_height and desc in video_formats:
-                    max_height = height
-                    best_video_desc = desc
-                    selected_video_ext = ext
-    
-        if best_video_desc:
-            self.video_format_combo.set(best_video_desc)
-            self.video_format_combo.config(state='readonly')
-        elif video_formats:
-            self.video_format_combo.current(0)
-            self.video_format_combo.config(state='readonly')
-            selected_video_ext = self._extract_ext_from_desc(self.video_format_combo.get())
-        else:
-            self.video_format_combo.set('')
-            self.video_format_combo.config(state='disabled')
-            selected_video_ext = None
-    
-        self.video_format_combo.bind("<<ComboboxSelected>>", self.on_video_format_change)
-    
-        # Вызываем фильтрацию аудио
-        self.update_audio_list_by_container(selected_video_ext)
-
-        # Обновление выходного формата по выбранному
-        self.update_output_format_default(selected_video_ext)
-            
-        # Обработка встроенных субтитров
-        subtitles = data.get('subtitles') or []
-        self.subtitle_listbox.delete(0, tk.END)
-        for lang in subtitles:
-            self.subtitle_listbox.insert(tk.END, lang)
-        self.subtitle_listbox.config(state='normal' if subtitles else 'disabled')
-    
-        # Обработка автоматических субтитров — независимо от наличия встроенных
-        auto_subs = data.get('auto_subtitles') or []
-        if auto_subs:
-            self.auto_subs_entry.config(state='normal')
-            self.auto_subs_entry.delete(0, tk.END)
-            self.auto_subs_entry.insert(0, ', '.join(auto_subs))
-        else:
-            self.auto_subs_entry.delete(0, tk.END)
-            self.auto_subs_entry.config(state='disabled')
-    
-        chapters = data.get('chapters')
-        self.chapters_var.set(bool(chapters))
-        self.chapters_check.config(state='normal' if chapters else 'disabled')
-    
-        self.chapters_available = bool(chapters)
-
-        self.log(f"Название видео: {data.get('title')}")
-        self.log(f"Платформа: {data.get('platform')}")
-        if data.get('cookies_updated'):
-            self.log("Внимание: куки были автоматически обновлены для корректной работы.")
-
-        # Очистка имени файла от запрещённых символов
-        raw_title = data.get('title') or 'video'
-        safe_title = re.sub(r'[\\/:"*?<>|]+', '_', raw_title)
-        self.video_name_entry.delete(0, tk.END)
-        self.video_name_entry.insert(0, safe_title)
-
-        # Сохраняем платформу и путь к cookie-файлу
-        self.platform = data.get('platform')
-        self.cookie_file_path = data.get('cookie_file')
-
-        self.log(f"Платформа установлена: {self.platform}")
-        if self.cookie_file_path:
-            self.log(f"Используем cookies: {self.cookie_file_path}")
-        else:
-            self.log("Cookies не заданы.")
-
-    def on_video_format_change(self, event=None):
-        # Получаем расширение выбранного видеоформата
-        desc = self.video_format_combo.get()
-        ext = self._extract_ext_from_desc(desc)
-        if ext:
-            # Обновляем список аудиоформатов
-            self.update_audio_list_by_container(ext)
-    
-            # Обновляем рекомендуемый выходной формат
-            self.update_output_format_default(ext)
-
-    def on_audio_format_change(self, event=None):
-        sel = self.audio_format_combo.get()
-        for i, a in enumerate(self.audio_formats_display):
-            if a['desc'] == sel and not a['allowed']:
-                self.log(f"Выбран несовместимый аудиоформат: {sel}.\nВНИМАНИЕ: конечный файл может быть некорректно собран.")
-                # Не сбрасываем выбор, даём возможность пользователю скачать несовместимый формат
-                break
-
-    def _extract_ext_from_desc(self, desc):
-        if not desc:
-            return None
-        
-        # Разбиваем описание на части, разделённые '[', и ищем расширение
-        parts = desc.split('[')
-        for part in parts[::-1]:  # Ищем с конца
-            if ']' in part:
-                ext = part.split(']')[0].strip()
-                if ext:
-                    return ext
-                else:
-                    self.log(f"Предупреждение: не найдено расширение в описании: {desc}")
-                    return None
-        return None
-
-    def update_audio_list_by_container(self, container_ext):
-        """Обновляет список аудиоформатов на основе выбранного видео формата."""
-        
-        # Определяем маппинг видео форматов и совместимых аудио
-        compatibility_map = {
-            'mp4': ['m4a', 'mp4', 'aac', 'mp3', 'opus'],  # расширенные аудио форматы для mp4
-            'webm': ['webm', 'opus', 'vorbis'],
-            'flv': ['mp3', 'aac'],
-            'mkv': ['aac', 'mp3', 'opus', 'vorbis', 'flac', 'dolby'],
-            'avi': ['mp3', 'aac'],
-            'mov': ['aac', 'mp3', 'alac'],
-            '3gp': ['amr', 'aac'],
-        }
-        
-        # Очищаем старые значения
-        self.audio_format_combo.unbind("<<ComboboxSelected>>")
-        
-        self.audio_formats_display = []
-        best_index = -1
-        best_abr = -1
-    
-        # Получаем расширение видеоформата (контейнера)
-        video_format_ext = container_ext.lower()
-        
-        # Получаем список совместимых аудио форматов для выбранного контейнера
-        compatible_audio_formats = compatibility_map.get(video_format_ext, [])
-    
-        # Проходим по всем аудио форматам и проверяем их совместимость
-        for i, f in enumerate(self.audio_formats_all):
-            # Если аудио формат совместим с видео контейнером, добавляем его
-            compatible = f['ext'] in compatible_audio_formats
-            
-            desc = f['desc_raw']
-            
-            # Добавляем битрейт
-            if f['abr']:
-                desc += f" {f['abr']}kbps"
-            
-            # Добавляем кодек и расширение
-            desc += f" [{f['acodec']}] [{f['ext']}]"
-            
-            # Если формат не совместим, добавляем пометку
-            if not compatible:
-                desc += " — НЕ ПОДДЕРЖИВАЕТСЯ"
-            
-            # Добавляем описание в список
-            self.audio_formats_display.append({
-                "desc": desc,
-                "allowed": compatible,
-                "index": i
-            })
-            
-            # Выбираем лучший доступный формат (если совместим)
-            if compatible and f['abr'] > best_abr:
-                best_index = i
-                best_abr = f['abr']
-    
-        # Обновляем список значений в комбобоксе
-        self.audio_format_combo['values'] = [f['desc'] for f in self.audio_formats_display]
-        
-        # Если есть хотя бы один подходящий формат, устанавливаем его
-        if best_index >= 0:
-            self.audio_format_combo.current(best_index)
-            self.audio_format_combo.config(state='normal')  # Делаем список доступным
-        else:
-            self.audio_format_combo.set('')  # Если нет совместимых форматов, оставляем пустым
-            self.audio_format_combo.config(state='normal')  # Делаем список доступным
-        
-        # Привязываем обработчик выбора аудиоформата
-        self.audio_format_combo.bind("<<ComboboxSelected>>", self.on_audio_format_change)
-
-    def update_output_format_default(self, video_ext):
-        supported = ["mp4", "mkv", "avi", "webm"]
-        default_format = video_ext if video_ext in supported else "mp4"
-        self.output_format_combo.set(default_format)
-        self.on_output_format_change()  # Обновляем чекбоксы по новому значению
-
-    def on_output_format_change(self, event=None):
-        selected = self.output_format_combo.get().lower()
-    
-        if selected == 'mkv':
-            # Субтитры можно встраивать всегда при mkv
-            if self.embed_subs_check['state'] == 'disabled':
-                self.embed_subs_var.set(True)
-            self.embed_subs_check.config(state='normal')
-    
-            # Главы — только если они есть
-            if getattr(self, 'chapters_available', False):
-                if self.embed_chapters_check['state'] == 'disabled':
-                    self.embed_chapters_var.set(True)
-                self.embed_chapters_check.config(state='normal')
-            else:
-                self.embed_chapters_var.set(False)
-                self.embed_chapters_check.config(state='disabled')
-        else:
-            self.embed_subs_check.config(state='disabled')
-            self.embed_chapters_check.config(state='disabled')
-
-    def log(self, message):
-        self.log_text.insert(tk.END, message + "\n")
-        self.log_text.see(tk.END)
-
-    def copy_log_text(self, event=None):
-        try:
-            selected_text = self.log_text.get(tk.SEL_FIRST, tk.SEL_LAST)
-            self.clipboard_clear()
-            self.clipboard_append(selected_text)
-        except tk.TclError:
-            pass
-        return "break"
-
-    def enable_shortcuts(self, widget):
-        def copy(event=None): widget.event_generate("<<Copy>>"); return "break"
-        def paste(event=None): widget.event_generate("<<Paste>>"); return "break"
-        def select_all(event=None): widget.event_generate("<<SelectAll>>"); return "break"
-        def undo(event=None): widget.event_generate("<<Undo>>"); return "break"
-        def delete_word(event=None):
-            try:
-                if isinstance(widget, tk.Text):
-                    index = widget.index(tk.INSERT)
-                    line, col = map(int, index.split('.'))
-                    text_before = widget.get(f"{line}.0", index)
-                else:
-                    index = widget.index(tk.INSERT)
-                    text_before = widget.get()[:index]
-                if not text_before.strip(): return "break"
-                i = len(text_before.rstrip())
-                while i > 0 and text_before[i-1] == " ": i -= 1
-                while i > 0 and text_before[i-1] not in (" ", "\n", "\t"): i -= 1
-                if isinstance(widget, tk.Text):
-                    widget.delete(f"{line}.{i}", index)
-                else:
-                    widget.delete(i, index)
-            except Exception: pass
-            return "break"
-
-        bindings = {
-            "<Control-c>": copy, "<Control-C>": copy,
-            "<Control-v>": paste, "<Control-V>": paste,
-            "<Control-a>": select_all, "<Control-A>": select_all,
-            "<Control-z>": undo, "<Control-Z>": undo,
-            "<Control-BackSpace>": delete_word,
-        }
-        for key_combo, handler in bindings.items():
-            widget.bind(key_combo, handler)
-
-    def add_context_menu(self, widget, is_text=True):
-        menu = tk.Menu(widget, tearoff=0)
-        menu.add_command(label="Копировать", command=lambda: widget.event_generate("<<Copy>>"))
-        if is_text:
-            menu.add_command(label="Вставить", command=lambda: widget.event_generate("<<Paste>>"))
-        menu.add_separator()
-        menu.add_command(label="Выделить всё", command=lambda: widget.event_generate("<<SelectAll>>"))
-
-        def show_menu(event):
-            try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
-
-        widget.bind("<Button-3>", show_menu)
-
-    def on_download_click(self):
-        # Получаем имя файла и формат
-        base_name = self.video_name_entry.get().strip() or "video"
-        ext = self.output_format_combo.get().lower() or "mp4"
-        default_filename = f"{base_name}.{ext}"
-    
-        # Диалог выбора пути
-        file_path = filedialog.asksaveasfilename(
-            initialdir=getattr(self, 'last_save_dir', os.getcwd()),
-            title="Сохранить видео как...",
-            defaultextension=f".{ext}",
-            initialfile=default_filename,
-            filetypes=[("Видео файлы", f"*.{ext}"), ("Все файлы", "*.*")]
-        )
-    
-        if not file_path:
-            self.log("Скачивание отменено пользователем.")
-            return
-    
-        self.last_save_dir = os.path.dirname(file_path)
-    
-        if os.path.exists(file_path):
-            answer = messagebox.askyesno("Файл уже существует",
-                                         f"Файл '{os.path.basename(file_path)}' уже существует.\nПерезаписать?")
-            if not answer:
-                self.log("Пользователь отменил перезапись файла.")
-                return
-    
-        self.log(f"Файл будет сохранён как: {file_path}")
-    
-        # Извлечение параметров
-        url = self.url_entry.get().strip()
-        video_desc = self.video_format_combo.get()
-        video_id = self._extract_format_id(video_desc)
-    
-        audio_id = None
-        audio_desc = self.audio_format_combo.get()
-        if audio_desc:
-            for a in self.audio_formats_display:
-                if a["desc"] == audio_desc:
-                    audio_id = self.formats_full[a["index"]].get("format_id")
-                    break
-    
-        subtitles = [self.subtitle_listbox.get(i) for i in self.subtitle_listbox.curselection()]
-        auto_subs_raw = self.auto_subs_entry.get().strip()
-        auto_subs = [s.strip() for s in auto_subs_raw.split(',')] if auto_subs_raw else []
-    
-        save_chapters = self.chapters_var.get()
-        output_name = os.path.splitext(os.path.basename(file_path))[0]
-        output_path = os.path.dirname(file_path)
-        output_format = ext
-    
-        embed_subs = self.embed_subs_var.get() if output_format == "mkv" else False
-        embed_chapters = self.embed_chapters_var.get() if output_format == "mkv" else False
-    
-        # Формируем subtitle_options
-        subtitle_options = {}
-        if subtitles:
-            subtitle_options['subtitleslangs'] = subtitles
-            subtitle_options['writesubtitles'] = True
-        if auto_subs:
-            subtitle_options['writeautomaticsub'] = True
-            subtitle_options['subtitleslangs'] = subtitle_options.get('subtitleslangs', []) + auto_subs
-        if embed_subs:
-            subtitle_options['embedsubtitles'] = True
-        if save_chapters:
-            subtitle_options['writechapters'] = True
-        if embed_chapters:
-            subtitle_options['embedchapters'] = True
-    
-        # Лог параметров
-        self.log("--- Параметры загрузки ---")
-        self.log(f"Ссылка: {url}")
-        self.log(f"Видео формат: {video_id}")
-        self.log(f"Аудио формат: {audio_id or 'нет'}")
-        self.log(f"Субтитры: {', '.join(subtitles) if subtitles else 'нет'}")
-        self.log(f"Авто-субтитры: {', '.join(auto_subs) if auto_subs else 'нет'}")
-        self.log(f"Главы: {'да' if save_chapters else 'нет'}")
-        self.log(f"Имя файла: {output_name}")
-        self.log(f"Формат выходного файла: {output_format}")
-        if output_format == "mkv":
-            self.log(f"Встраивание субтитров: {'да' if embed_subs else 'нет'}")
-            self.log(f"Встраивание глав: {'да' if embed_chapters else 'нет'}")
-    
-        self.log("Запуск загрузки...")
-    
-        # Запуск в отдельном потоке
-        threading.Thread(target=self.threaded_download_video, args=(
-            url, video_id, audio_id,
-            output_path, output_name,
-            output_format,  # merge_format
-            self.platform,
-            getattr(self, 'cookie_file_path', None),
-            subtitle_options,
-            self.formats_full  # <-- добавлено
-        ), daemon=True).start()
-    
-
-    def threaded_download_video(self, url, video_id, audio_id, output_path, output_name,
-                                 merge_format, platform, cookie_file_path, subtitle_options,
-                                 formats_full):
-        try:
-            self.log("Начинаем загрузку видео...")
-    
-            # Проверка: если video_id уже содержит аудио, обнуляем audio_id
-            for f in formats_full:
-                if f.get("format_id") == video_id:
-                    vcodec = f.get("vcodec")
-                    acodec = f.get("acodec")
-                    if acodec and acodec != "none":
-                        self.log(f"Выбранный видеоформат {video_id} уже содержит аудиокодек ({acodec}). Аудио-трек не нужен.")
-                        audio_id = None
-                    break
-    
-            result = download_video(url, video_id, audio_id,
-                                    output_path, output_name,
-                                    merge_format, platform,
-                                    cookie_file_path,
-                                    subtitle_options)
-            if result:
-                self.log(f"Готово: {result}")
-            else:
-                self.log("Ошибка: итоговый файл не найден.")
-        except Exception as e:
-            self.log(f"Ошибка загрузки: {e}")
-
-    def _extract_format_id(self, desc):
-        for f in self.formats_full:
-            if self._build_desc(f) == desc:
-                return f.get('format_id')
-        return None
-
-    def _build_desc(self, f):
-        """Собирает строку описания формата, аналогично populate_from_analysis."""
-        fmt_str = f.get('format_note') or f.get('format_id') or 'unknown'
-        desc = fmt_str
-        if f.get('height'):
-            desc += f" {f['height']}p"
-        if f.get('fps'):
-            desc += f" {f['fps']}fps"
-        desc += f" ({f.get('vcodec')}/{f.get('acodec')})"
-        desc += f" [{f.get('ext')}]"
-        return desc
-
 if __name__ == '__main__':
-    app = VDL_GUI()
-    app.mainloop()
-
+    main()
