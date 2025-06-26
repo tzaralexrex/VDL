@@ -40,11 +40,24 @@ debug_file_initialized = False
 
 def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
     """
-    Быстро проверяет, «жив» ли куки-файл.
-    Для YouTube берём главную страницу, для Facebook — тоже.
-    Возвращает True, если запрос прошёл без ошибки авторизации.
+    Проверяет, работает ли указанный cookie-файл.
+    Загружает тестовую страницу, характерную для платформы.
+    Возвращает True, если запрос проходит без ошибки авторизации.
     """
-    test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
+
+    platform_test_urls = {
+        "youtube":  "https://www.youtube.com",
+        "facebook": "https://www.facebook.com",
+        "vimeo":    "https://vimeo.com",
+        "rutube":   "https://rutube.ru",
+        "vk":       "https://vk.com",
+    }
+
+    test_url = platform_test_urls.get(platform)
+    if not test_url:
+        log_debug(f"cookie_file_is_valid: Неизвестная платформа '{platform}', невозможно проверить куки.")
+        return False
+
     try:
         opts = {
             "quiet": True,
@@ -54,10 +67,14 @@ def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(test_url, download=False)
+        log_debug(f"cookie_file_is_valid: Куки для {platform} прошли проверку.")
         return True
-    except DownloadError:
+
+    except DownloadError as e:
+        log_debug(f"cookie_file_is_valid: DownloadError для {platform}:\n{str(e)}")
         return False
-    except Exception:
+    except Exception as e:
+        log_debug(f"cookie_file_is_valid: Ошибка при проверке куков для {platform}:\n{traceback.format_exc()}")
         return False
 
 def detect_ffmpeg_path():
@@ -166,11 +183,24 @@ def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
 
-def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: bool = False) -> str | None:
+def get_cookies_for_platform(platform: str, force_browser: bool = False) -> str | None:
     """
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
     """
+
+    cookie_files = {
+        'youtube':  'cookies_yt.txt',
+        'facebook': 'cookies_fb.txt',
+        'vimeo':    'cookies_vi.txt',
+        'rutube':   'cookies_rt.txt',
+        'vk':       'cookies_vk.txt',
+    }
+
+    cookie_file = cookie_files.get(platform)
+    if not cookie_file:
+        log_debug(f"Неизвестная платформа '{platform}' — cookie-файл не определён.")
+        return None
 
     # 1. Попытка загрузить куки из существующего файла
     if os.path.exists(cookie_file):
@@ -241,7 +271,6 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
     return None
 
 
-
 def get_video_info(url, platform, cookie_file_path=None):
     ydl_opts = {'quiet': True, 'skip_download': True}
     if cookie_file_path:
@@ -256,16 +285,16 @@ def get_video_info(url, platform, cookie_file_path=None):
             info['__cookiefile__'] = cookie_file_path
         return info
 
+
 def safe_get_video_info(url: str, platform: str):
     """
     Пытается: 1) c куками из файла → 2) вытаскивает куки из браузера → 3) без куков.
     Если контент всё равно требует логин — выводит инструкцию и завершает работу.
     """
-    # Определяем имя cookie‑файла
-    cookie_path = COOKIES_FB if platform == "facebook" else COOKIES_YT
 
-    # 1-я попытка: то, что уже есть на диске
-    current_cookie = get_cookies_for_platform(platform, cookie_path)
+    # 1-я попытка: из файла, если он есть и валиден
+    current_cookie = get_cookies_for_platform(platform)
+
     for attempt in ("file", "browser", "none"):
         try:
             return get_video_info(url, platform, current_cookie if attempt != "none" else None)
@@ -273,19 +302,29 @@ def safe_get_video_info(url: str, platform: str):
             err_l = str(err).lower()
             need_login = any(x in err_l for x in ("login", "403", "private", "sign in"))
             if not need_login:
-                raise  # ошибка не про авторизацию
+                raise  # ошибка не связана с авторизацией
+
             if attempt == "file":
-                # 2-я попытка: принудительно берём свежие куки из браузера
-                current_cookie = get_cookies_for_platform(platform, cookie_path, force_browser=True)
+                # 2-я попытка: извлекаем свежие куки из браузера
+                current_cookie = get_cookies_for_platform(platform, force_browser=True)
+
             elif attempt == "browser":
                 # 3-я попытка: совсем без куков
                 current_cookie = None
+
             else:
+                cookie_file_example = {
+                    'youtube':  'cookies_yt.txt',
+                    'facebook': 'cookies_fb.txt',
+                    'vimeo':    'cookies_vi.txt',
+                    'rutube':   'cookies_rt.txt',
+                    'vk':       'cookies_vk.txt',
+                }.get(platform, 'cookies.txt')
+
                 print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
                       f"Сохраните их вручную (расширением EditThisCookie, Get cookies.txt, и т.д.)\n"
-                      f"и положите файл сюда: {cookie_path}\n")
+                      f"и положите файл сюда: {cookie_file_example}\n")
                 sys.exit(1)
-
 
 
 def choose_format(formats):
