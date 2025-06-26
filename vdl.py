@@ -11,6 +11,7 @@ import sys
 import traceback
 import http.cookiejar # Для работы с куки-файлами
 import glob
+import time
 
 import browser_cookie3
 from browser_cookie3 import BrowserCookieError
@@ -25,7 +26,7 @@ from colorama import init, Fore, Style
 init(autoreset=True)  # инициализация colorama и автоматический сброс цвета после каждого print
 
 DEBUG = 1 # Глобальная переменная для включения/выключения отладки
-DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
+DEBUG_APPEND = 0 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
 CONFIG_FILE = 'vdl_conf.json'
 DEBUG_FILE = 'debug.log'
@@ -242,6 +243,104 @@ def choose_format(formats):
 
     return video_formats[v_choice]['format_id'], audio_id, video_formats[v_choice]['ext']
 
+def ask_and_select_subtitles(info):
+    subtitles_info = info.get('subtitles') or {}
+    auto_info = info.get('automatic_captions') or {}
+
+    embedded_langs = list(subtitles_info.keys())
+    auto_langs = list(auto_info.keys())
+
+    use_embedded = bool(embedded_langs)
+    use_auto = bool(auto_langs)
+
+    selected_langs = []
+    download_automatics = set()
+
+    if not use_embedded and not use_auto:
+        print(Fore.YELLOW + "Субтитры к видео не обнаружены." + Style.RESET_ALL)
+        log_debug("Субтитры не найдены.")
+        return None
+
+    if use_embedded:
+        print(Fore.MAGENTA + "\nК видео найдены вложенные субтитры:" + Style.RESET_ALL)
+        numbered = []
+        for idx, lang in enumerate(sorted(embedded_langs), start=1):
+            formats = sorted({e['ext'] for e in subtitles_info[lang]})
+            print(f"{idx}. {lang} — Доступные форматы: {', '.join(formats)}")
+            numbered.append(lang)
+
+        if use_auto:
+            intersect = [lang for lang in numbered if lang in auto_info]
+            if intersect:
+                print(Fore.CYAN + f"\nТакже доступны автоматические субтитры для: {', '.join(intersect)}" + Style.RESET_ALL)
+
+        sel = input(Fore.CYAN + "\nВведите номера или коды языков (например, '1,3' или 'en,ru'), '-' — не скачивать субтитры (по умолчанию: 0 — все): " + Style.RESET_ALL).strip()
+        if sel == '-':
+            print(Fore.YELLOW + "Загрузка субтитров отменена пользователем." + Style.RESET_ALL)
+            return None
+
+        if not sel or sel == '0':
+            selected_langs = numbered
+        else:
+            parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+            for p in parts:
+                if p.isdigit():
+                    i = int(p) - 1
+                    if 0 <= i < len(numbered):
+                        selected_langs.append(numbered[i])
+                elif p in numbered:
+                    selected_langs.append(p)
+
+        selected_langs = sorted(set(selected_langs))
+        if not selected_langs:
+            print(Fore.YELLOW + "Неверный выбор. Субтитры загружены не будут." + Style.RESET_ALL)
+            log_debug("Пустой или неверный выбор языков субтитров.")
+            return None
+
+        for lang in selected_langs:
+            if lang in auto_info:
+                ask = input(Fore.CYAN + f"Скачать также автоматические субтитры для языка '{lang}'? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                if ask == '0':
+                    continue
+                download_automatics.add(lang)
+
+        write_automatic = bool(download_automatics)
+
+    elif use_auto:
+        print(Fore.MAGENTA + "К видео доступны только автоматические субтитры для языков:" + Style.RESET_ALL)
+        print(', '.join(sorted(auto_langs)))
+        sel = input(Fore.CYAN + "Введите языки для загрузки автоматических субтитров (например, 'en,ru'), '-' — не загружать (по умолчанию: en, ru): " + Style.RESET_ALL).strip()
+        if sel == '-':
+            print(Fore.YELLOW + "Загрузка субтитров отменена пользователем." + Style.RESET_ALL)
+            return None
+        elif not sel:
+            default_langs = ['en', 'ru']
+            selected_langs = [lang for lang in default_langs if lang in auto_langs]
+            print(Fore.GREEN + f"По умолчанию выбраны автоматические субтитры: {', '.join(selected_langs)}" + Style.RESET_ALL)
+        elif sel == '0':
+            selected_langs = auto_langs
+        else:
+            parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+            for lang in parts:
+                if lang in auto_langs:
+                    selected_langs.append(lang)
+        selected_langs = sorted(set(selected_langs))
+        if not selected_langs:
+            print(Fore.YELLOW + "Выбранные языки не найдены среди автоматических субтитров." + Style.RESET_ALL)
+            return None
+        download_automatics.update(selected_langs)
+        write_automatic = True
+
+    print(Fore.GREEN + f"Выбранные языки субтитров: {', '.join(selected_langs)}" + Style.RESET_ALL)
+    log_debug(f"Выбранные субтитры: {selected_langs}, автоматические: {sorted(download_automatics)}")
+
+    return {
+        'writesubtitles': use_embedded,
+        'writeautomaticsub': write_automatic,
+        'subtitleslangs': selected_langs,
+        'subtitlesformat': 'best'
+    }
+
 
 def select_output_folder():
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
@@ -368,8 +467,27 @@ def ask_output_format(default_format):
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
+def convert_vtt_to_srt(folder, basename, langs):
+    import subprocess
+    converted = []
+    for lang in langs:
+        vtt_file = os.path.join(folder, f"{basename}.{lang}.vtt")
+        srt_file = os.path.join(folder, f"{basename}.{lang}.srt")
+        if os.path.exists(vtt_file):
+            try:
+                subprocess.run(
+                    ['ffmpeg', '-y', '-i', vtt_file, srt_file],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                print(Fore.GREEN + f"Сконвертирован в .srt: {srt_file}" + Style.RESET_ALL)
+                converted.append((vtt_file, srt_file))
+            except Exception as e:
+                print(Fore.RED + f"Ошибка при конвертации {vtt_file} → {srt_file}: {e}" + Style.RESET_ALL)
+    return converted
 
-def download_video(url, video_id, audio_id, output_path, output_name, merge_format, platform, cookie_file_path=None):
+def download_video(url, video_id, audio_id, output_path, output_name, merge_format, platform, cookie_file_path=None, subtitle_options=None):
     full_output_template = os.path.join(output_path, output_name + '.%(ext)s')
     log_debug(f"Шаблон выходного файла yt-dlp: {full_output_template}")
 
@@ -391,11 +509,11 @@ def download_video(url, video_id, audio_id, output_path, output_name, merge_form
         'format': format_string,
         'outtmpl': full_output_template,
         'merge_output_format': merge_format,
-        'quiet': False,  
+        'quiet': False,
         'ffmpeg_location': ffmpeg_path,
-        'overwrites': True, # Явно указываем yt-dlp перезаписывать файл, если он уже есть
-        'progress_hooks': [lambda d: None],  
-        'continuedl': True,  
+        'overwrites': True,
+        'progress_hooks': [lambda d: None],
+        'continuedl': True,
         'writedescription': False,
         'writeinfojson': False,
         'writesubtitles': False,
@@ -405,57 +523,74 @@ def download_video(url, video_id, audio_id, output_path, output_name, merge_form
         ydl_opts['cookiefile'] = cookie_file_path
         log_debug(f"download_video: Используем cookiefile: {cookie_file_path}")
 
+    if subtitle_options:
+        ydl_opts.update(subtitle_options)
+        log_debug(f"Опции субтитров добавлены: {subtitle_options}")
+
     os.makedirs(output_path, exist_ok=True)
     log_debug(f"Убедились, что директория '{output_path}' существует.")
 
-    try:
-        log_debug(f"Запуск yt-dlp для URL: {url} с опциями: {ydl_opts}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.download([url])
-            log_debug(f"Загрузка yt-dlp завершена. Результат info: {info}")
-            
-            # После успешной загрузки yt-dlp должен переименовать файл
-            final_file_name_expected = f"{output_name}.{merge_format}"
-            final_file_path_expected = os.path.join(output_path, final_file_name_expected)
-            
-            log_debug(f"Ожидаемый конечный файл: {final_file_path_expected}")
-            
-            # Расширенная проверка существования файла
-            if os.path.exists(final_file_path_expected):
-                log_debug(f"Файл '{final_file_path_expected}' найден с помощью os.path.exists.")
-                return final_file_path_expected
-            else:
-                log_debug(f"Файл '{final_file_path_expected}' НЕ найден с помощью os.path.exists.")
-                # Попробуем найти файл через os.listdir, чтобы проверить кодировку
-                found_by_listdir = None
-                try:
-                    dir_contents = os.listdir(output_path)
-                    log_debug(f"Содержимое директории '{output_path}': {dir_contents}")
-                    for f_name in dir_contents:
-                        # Сравниваем в нижнем регистре для регистронезависимости
-                        # И проверяем, что имя начинается с output_name и заканчивается merge_format
-                        if f_name.lower().startswith(output_name.lower()) and \
-                           f_name.lower().endswith(f".{merge_format.lower()}"):
-                            found_by_listdir = os.path.join(output_path, f_name)
-                            log_debug(f"Файл найден через os.listdir: {found_by_listdir}")
-                            break
-                    if found_by_listdir:
-                        return found_by_listdir
-                    else:
-                        log_debug(f"Файл '{final_file_name_expected}' НЕ найден в директории '{output_path}' через os.listdir.")
-                        return None
-                except Exception as ex:
-                    log_debug(f"Ошибка при попытке os.listdir({output_path}): {ex}")
-                    return None # Ошибка при чтении директории
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            log_debug(f"Попытка {attempt}/{max_retries}. Запуск yt-dlp для URL: {url} с опциями: {ydl_opts}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.download([url])
+                log_debug(f"Загрузка yt-dlp завершена. Результат info: {info}")
 
-    except DownloadError as e:
-        log_debug(f"yt-dlp DownloadError: {str(e)}")
-        print(f"{Fore.RED}Произошла ошибка во время загрузки: {e}{Style.RESET_ALL}")
-        raise # Перевыбрасываем ошибку, чтобы main ее обработал
-    except Exception as e:
-        log_debug(f"Непредвиденная ошибка во время загрузки: {str(e)}\n{traceback.format_exc()}")
-        print(f"{Fore.RED}Произошла непредвиденная ошибка во время загрузки: {e}{Style.RESET_ALL}")
-        raise
+                # --- Конвертация субтитров vtt → srt, если нужно ---
+                if subtitle_options and subtitle_options.get('subtitleslangs'):
+                    langs = subtitle_options['subtitleslangs']
+                    converted_files = convert_vtt_to_srt(output_path, output_name, langs)
+                    if converted_files:
+                        resp = input("Удалить оригинальные .vtt файлы после конвертации в .srt? (1 — да, 0 — нет, Enter = 1): ").strip()
+                        if resp != '0':
+                            for vtt, _ in converted_files:
+                                try:
+                                    os.remove(vtt)
+                                    print(Fore.YELLOW + f"Удалён: {vtt}" + Style.RESET_ALL)
+                                except Exception as e:
+                                    print(Fore.RED + f"Ошибка при удалении {vtt}: {e}" + Style.RESET_ALL)
+
+                final_file_name_expected = f"{output_name}.{merge_format}"
+                final_file_path_expected = os.path.join(output_path, final_file_name_expected)
+                log_debug(f"Ожидаемый конечный файл: {final_file_path_expected}")
+
+                if os.path.exists(final_file_path_expected):
+                    log_debug(f"Файл '{final_file_path_expected}' найден с помощью os.path.exists.")
+                    return final_file_path_expected
+                else:
+                    log_debug(f"Файл '{final_file_path_expected}' НЕ найден с помощью os.path.exists.")
+
+                    found_by_listdir = None
+                    try:
+                        dir_contents = os.listdir(output_path)
+                        log_debug(f"Содержимое директории '{output_path}': {dir_contents}")
+                        for f_name in dir_contents:
+                            if f_name.lower().startswith(output_name.lower()) and f_name.lower().endswith(f".{merge_format.lower()}"):
+                                found_by_listdir = os.path.join(output_path, f_name)
+                                log_debug(f"Файл найден через os.listdir: {found_by_listdir}")
+                                break
+                        return found_by_listdir
+                    except Exception as ex:
+                        log_debug(f"Ошибка при попытке os.listdir({output_path}): {ex}")
+                        return None
+
+        except DownloadError as e:
+            error_str = str(e)
+            log_debug(f"yt-dlp DownloadError (попытка {attempt}): {error_str}")
+            if "Read timed out" in error_str and attempt < max_retries:
+                print(Fore.YELLOW + f"Временный сбой соединения. Повтор через 3 секунды ({attempt}/{max_retries})..." + Style.RESET_ALL)
+                time.sleep(3)
+                continue
+            else:
+                print(Fore.RED + f"Произошла ошибка во время загрузки: {e}" + Style.RESET_ALL)
+                raise
+        except Exception as e:
+            log_debug(f"Непредвиденная ошибка во время загрузки (попытка {attempt}): {str(e)}\n{traceback.format_exc()}")
+            print(Fore.RED + f"Произошла непредвиденная ошибка во время загрузки: {e}" + Style.RESET_ALL)
+            raise
+
 
 
 def main():
@@ -483,6 +618,7 @@ def main():
         # log_debug(json.dumps(info, indent=2)) # Это может быть слишком объемно для лога
 
         video_id, audio_id, default_ext = choose_format(info['formats'])
+        subtitle_download_options = ask_and_select_subtitles(info)
         output_path = select_output_folder()
         output_format = ask_output_format(default_ext)
 
@@ -493,8 +629,9 @@ def main():
         
         output_name = ask_output_filename(safe_title, output_path, output_format)
         log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
+        log_debug(f"subtitle_options переданы: {subtitle_download_options}")
 
-        downloaded_file = download_video(url, video_id, audio_id, output_path, output_name, output_format, platform, cookie_file_to_use)
+        downloaded_file = download_video(url, video_id, audio_id, output_path, output_name, output_format, platform, cookie_file_to_use, subtitle_options=subtitle_download_options)
 
         if downloaded_file:
             print(Fore.GREEN + f"\nГотово. Видео сохранено в: {downloaded_file}" + Style.RESET_ALL)
