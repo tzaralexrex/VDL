@@ -1286,6 +1286,9 @@ class VDL_GUI(tk.Tk):
         self.last_save_dir = os.getcwd()
         self.chapters_available = False
 
+        self._download_thread = None
+        self._download_cancel_event = threading.Event()
+
         self.create_widgets()
         self.queue = queue.Queue()
         self.after(100, lambda: self.url_entry.focus_set())
@@ -1745,6 +1748,9 @@ class VDL_GUI(tk.Tk):
         widget.bind("<Button-3>", show_menu)
 
     def on_download_click(self):
+        if self.download_button['text'] == "Отменить загрузку":
+            self.cancel_download()
+            return        
         # Получаем имя файла и формат
         base_name = self.video_name_entry.get().strip() or "video"
         ext = self.output_format_combo.get().lower() or "mp4"
@@ -1851,7 +1857,10 @@ class VDL_GUI(tk.Tk):
         self.log("Запуск загрузки...")
     
         # Запуск в отдельном потоке
-        threading.Thread(target=self.threaded_download_video, args=(
+
+        self.download_button.config(text="Отменить загрузку", state="normal")
+        self._download_cancel_event.clear()
+        self._download_thread = threading.Thread(target=self.threaded_download_video, args=(
             url, video_id, audio_id,
             output_path, output_name,
             output_format,
@@ -1859,7 +1868,15 @@ class VDL_GUI(tk.Tk):
             getattr(self, 'cookie_file_path', None),
             subtitle_options,
             self.formats_full
-        ), daemon=True).start()
+        ), daemon=True)
+        self._download_thread.start()
+
+    def cancel_download(self):
+        self._download_cancel_event.set()
+        self.log("Загрузка отменяется пользователем...")
+        self.download_status.config(text="Загрузка отменена.")
+        self.download_progress["value"] = 0
+        self.download_button.config(text="Скачать видео", state="normal")
 
     def threaded_download_video(self, url, video_id, audio_id, output_path, output_name,
                                  merge_format, platform, cookie_file_path, subtitle_options,
@@ -1879,6 +1896,8 @@ class VDL_GUI(tk.Tk):
 
             # --- Прогресс-хук для GUI ---
             def gui_progress_hook(d):
+                if self._download_cancel_event.is_set():
+                    raise Exception("Загрузка отменена пользователем.")
                 if d['status'] == 'downloading':
                     downloaded = d.get('downloaded_bytes', 0)
                     total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
@@ -1899,27 +1918,33 @@ class VDL_GUI(tk.Tk):
                     self.download_status.config(text="Скачивание завершено.")
                     self.update_idletasks()
 
-            result = download_video(
-                url, video_id, audio_id,
-                output_path, output_name,
-                merge_format, platform,
-                cookie_file_path,
-                subtitle_options,
-                progress_hooks=[gui_progress_hook]
-            )
-            if result:
-                self.download_progress["value"] = 100
-                self.download_status.config(text="Готово.")
-                self.log(f"Готово: {result}")
-            else:
-                self.download_status.config(text="Ошибка: итоговый файл не найден.")
-                self.log("Ошибка: итоговый файл не найден.")
-        except Exception as e:
-            self.download_status.config(text=f"Ошибка загрузки: {e}")
-            self.log(f"Ошибка загрузки: {e}")
+            try:
+                result = download_video(
+                    url, video_id, audio_id,
+                    output_path, output_name,
+                    merge_format, platform,
+                    cookie_file_path,
+                    subtitle_options,
+                    progress_hooks=[gui_progress_hook]
+                )
+                if result:
+                    self.download_progress["value"] = 100
+                    self.download_status.config(text="Готово.")
+                    self.log(f"Готово: {result}")
+                else:
+                    self.download_status.config(text="Ошибка: итоговый файл не найден.")
+                    self.log("Ошибка: итоговый файл не найден.")
+            except Exception as e:
+                if str(e) == "Загрузка отменена пользователем.":
+                    self.download_status.config(text="Загрузка отменена.")
+                    self.log("Загрузка отменена пользователем.")
+                else:
+                    self.download_status.config(text=f"Ошибка загрузки: {e}")
+                    self.log(f"Ошибка загрузки: {e}")
         finally:
+            self.download_button.config(text="Скачать видео", state="normal")
             self.after(3000, self._hide_download_progress)
-
+            
     def _extract_format_id(self, desc):
         for f in self.formats_full:
             if self._build_desc(f) == desc:
