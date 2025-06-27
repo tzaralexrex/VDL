@@ -1203,37 +1203,43 @@ def main():
                 log_debug(f"Выполняется команда ffmpeg для объединения: {' '.join(map(str, ffmpeg_cmd))}")
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
 
-
                 if result.returncode == 0:
+                    # Удаляем исходный файл, если он отличается от итогового
                     try:
-                        os.remove(current_processing_file)
+                        if os.path.exists(current_processing_file) and current_processing_file != temp_output_file:
+                            os.remove(current_processing_file)
+                            log_debug(f"Удалён исходный файл после mux: {current_processing_file}")
                     except Exception as e:
                         log_debug(f"Ошибка при удалении исходного файла после mux: {e}")
                     current_processing_file = temp_output_file
 
+                    # Удаляем файл глав, если не требуется сохранять
                     if integrate_chapters and chapter_filename and not keep_chapter_file:
                         try:
-                            os.remove(chapter_filename)
-                            print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
-                            log_debug(f"Удалён временный файл глав: {chapter_filename}")
+                            if os.path.exists(chapter_filename):
+                                os.remove(chapter_filename)
+                                print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
+                                log_debug(f"Удалён временный файл глав: {chapter_filename}")
                         except Exception as e:
                             log_debug(f"Ошибка при удалении файла глав: {e}")
 
+                    # Удаляем файлы субтитров, если не требуется сохранять
                     if integrate_subs and subs_to_integrate:
                         print(Fore.GREEN + f"Видео, аудио и субтитры объединены в {desired_ext.upper()}." + Style.RESET_ALL)
                         log_debug(f"Видео, аудио и субтитры объединены в {desired_ext.upper()}: {temp_output_file}")
                         if not keep_sub_files:
                             for sub_file, _ in subs_to_integrate:
                                 try:
-                                    os.remove(sub_file)
-                                    print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
-                                    log_debug(f"Удалён встроенный файл субтитров: {sub_file}")
+                                    if os.path.exists(sub_file):
+                                        os.remove(sub_file)
+                                        print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
+                                        log_debug(f"Удалён встроенный файл субтитров: {sub_file}")
                                 except Exception as e:
                                     print(Fore.RED + f"Ошибка при удалении файла субтитров {sub_file}: {e}" + Style.RESET_ALL)
                                     log_debug(f"Ошибка при удалении файла субтитров {sub_file}: {e}")
                     else:
-                        print(Fore.GREEN + f"Видео и аудио объединены в {desired_ext}." + Style.RESET_ALL)
-                        log_debug(f"Видео и аудио объединены в {desired_ext}: {temp_output_file}")
+                        print(Fore.GREEN + f"Видео и аудио объединены в {desired_ext.upper()}." + Style.RESET_ALL)
+                        log_debug(f"Видео и аудио объединены в {desired_ext.upper()}: {temp_output_file}")
                 else:
                     print(Fore.RED + "Ошибка при объединении через ffmpeg." + Style.RESET_ALL)
                     log_debug("Ошибка при объединении через ffmpeg.")
@@ -1428,7 +1434,7 @@ class VDL_GUI(tk.Tk):
             self.platform = data.get("platform")
             self.populate_from_analysis(data)
             self.log("Анализ завершён.")
-            self.status_label.config(text="Готово")
+            self.status_label.config(text="")
         except Exception as e:
             self.log(f"Ошибка анализа: {e}")
             self.status_label.config(text="Ошибка анализа")
@@ -1453,7 +1459,8 @@ class VDL_GUI(tk.Tk):
                     "desc_raw": fmt_str,
                     "abr": abr,
                     "acodec": acodec,
-                    "ext": ext
+                    "ext": ext,
+                    "format_id": f.get("format_id")
                 })
     
         # Сначала видео
@@ -1614,6 +1621,7 @@ class VDL_GUI(tk.Tk):
     
         # Проходим по всем аудио форматам и проверяем их совместимость
         for i, f in enumerate(self.audio_formats_all):
+            self.log(f"Аудиоформат {i}: {f}")
             # Если аудио формат совместим с видео контейнером, добавляем его
             compatible = f['ext'] in compatible_audio_formats
             
@@ -1634,7 +1642,8 @@ class VDL_GUI(tk.Tk):
             self.audio_formats_display.append({
                 "desc": desc,
                 "allowed": compatible,
-                "index": i
+                "index": i,
+                "format_id": f.get("format_id")
             })
             
             # Выбираем лучший доступный формат (если совместим)
@@ -1787,15 +1796,16 @@ class VDL_GUI(tk.Tk):
     
         audio_id = None
         audio_desc = self.audio_format_combo.get()
-        if audio_desc:
-            for a in self.audio_formats_display:
-                if a["desc"] == audio_desc:
-                    audio_id = self.formats_full[a["index"]].get("format_id")
-                    break
+        self.log(f"Выбран аудиоформат: {audio_desc}")
+        for a in self.audio_formats_display:
+            if a["desc"] == audio_desc:
+                audio_id = a.get("format_id")
+                self.log(f"audio_id для yt-dlp: {audio_id}")
+                break
     
         subtitles = [self.subtitle_listbox.get(i) for i in self.subtitle_listbox.curselection()]
         auto_subs_raw = self.auto_subs_entry.get().strip()
-        auto_subs = [s.strip() for s in auto_subs_raw.split(',')] if auto_subs_raw else []
+        auto_subs = [s for s in re.split(r'[,\s]+', auto_subs_raw) if s] if auto_subs_raw else []
     
         save_chapters = self.chapters_var.get()
         output_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -1832,6 +1842,10 @@ class VDL_GUI(tk.Tk):
             subtitle_options['writechapters'] = True
         if embed_chapters:
             subtitle_options['embedchapters'] = True
+
+        # Всегда пытаемся скачать srt, если возможно
+        if subtitles or auto_subs:
+            subtitle_options['subtitlesformat'] = 'srt'
     
         # Лог параметров
         self.log("--- Параметры загрузки ---")
@@ -1879,8 +1893,8 @@ class VDL_GUI(tk.Tk):
         self.download_button.config(text="Скачать видео", state="normal")
 
     def threaded_download_video(self, url, video_id, audio_id, output_path, output_name,
-                                 merge_format, platform, cookie_file_path, subtitle_options,
-                                 formats_full):
+                                merge_format, platform, cookie_file_path, subtitle_options,
+                                formats_full):
         try:
             self.log("Начинаем загрузку видео...")
 
@@ -1928,12 +1942,89 @@ class VDL_GUI(tk.Tk):
                     progress_hooks=[gui_progress_hook]
                 )
                 if result:
+                    # --- MUX в нужный контейнер, если требуется ---
+                    input_file = result
+                    input_ext = os.path.splitext(input_file)[1][1:].lower()
+                    target_ext = merge_format.lower()
+                    temp_output_file = os.path.join(output_path, f"{output_name}_muxed_temp.{target_ext}")
+                    output_file = os.path.join(output_path, f"{output_name}.{target_ext}")
+
+                    chapters_file = os.path.join(output_path, f"{output_name}.chapters.txt")
+                    embed_chapters = self.embed_chapters_var.get() if target_ext == "mkv" else False
+                    embed_subs = self.embed_subs_var.get() if target_ext == "mkv" else False
+
+                    need_mux = (
+                        input_ext != target_ext or
+                        (target_ext == "mkv" and (embed_chapters or embed_subs))
+                    )
+
+                    if need_mux:
+                        ffmpeg_path = detect_ffmpeg_path()
+                        if not ffmpeg_path:
+                            self.log("FFmpeg не найден, не могу выполнить mux.")
+                        else:
+                            ffmpeg_cmd = [ffmpeg_path, '-y', '-i', input_file]
+                            subs_to_integrate = []
+                            # --- Поиск файлов субтитров для интеграции ---
+                            if embed_subs and target_ext == "mkv" and subtitle_options:
+                                subtitle_langs = subtitle_options.get('subtitleslangs', [])
+                                # Всегда ищем сначала srt, если нет — vtt
+                                for lang in subtitle_langs:
+                                    sub_path_srt = os.path.join(output_path, f"{output_name}.{lang}.srt")
+                                    sub_path_vtt = os.path.join(output_path, f"{output_name}.{lang}.vtt")
+                                    if os.path.exists(sub_path_srt):
+                                        ffmpeg_cmd += ['-i', sub_path_srt]
+                                        subs_to_integrate.append((sub_path_srt, lang, 'srt'))
+                                    elif os.path.exists(sub_path_vtt):
+                                        ffmpeg_cmd += ['-i', sub_path_vtt]
+                                        subs_to_integrate.append((sub_path_vtt, lang, 'vtt'))
+                            # Главы
+                            if target_ext == "mkv" and embed_chapters and os.path.exists(chapters_file):
+                                ffmpeg_cmd += ['-f', 'ffmetadata', '-i', chapters_file]
+                            ffmpeg_cmd += ['-c', 'copy', '-map', '0']
+                            # Карты для субтитров
+                            if embed_subs and subs_to_integrate:
+                                for idx, (_, lang, fmt) in enumerate(subs_to_integrate):
+                                    ffmpeg_cmd += ['-map', str(idx + 1)]
+                                    ffmpeg_cmd += [f'-metadata:s:s:{idx}', f'language={lang}']
+                                # Выбираем кодек для субтитров
+                                if any(fmt == 'srt' for _, _, fmt in subs_to_integrate):
+                                    ffmpeg_cmd += ['-c:s', 'srt']
+                                else:
+                                    ffmpeg_cmd += ['-c:s', 'webvtt']
+                            # Метаданные для глав
+                            if target_ext == "mkv" and embed_chapters and os.path.exists(chapters_file):
+                                chapter_input_idx = 1 + len(subs_to_integrate)
+                                ffmpeg_cmd += ['-map_metadata', str(chapter_input_idx)]
+                            ffmpeg_cmd += [temp_output_file]
+                            self.log(f"Выполняется mux в {target_ext} через ffmpeg...")
+                            proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+                            if proc.returncode == 0 and os.path.exists(temp_output_file):
+                                self.log(f"Файл mux сохранён как: {temp_output_file}")
+                                try:
+                                    if os.path.exists(input_file) and input_file != temp_output_file:
+                                        os.remove(input_file)
+                                except Exception:
+                                    pass
+                                # Переименовываем временный файл в итоговый
+                                try:
+                                    if os.path.exists(output_file):
+                                        os.remove(output_file)
+                                    os.rename(temp_output_file, output_file)
+                                    self.log(f"Файл переименован в: {output_file}")
+                                except Exception as e:
+                                    self.log(f"Ошибка при переименовании muxed файла: {e}")
+                            else:
+                                self.log(f"Ошибка mux в {target_ext}: {proc.stderr}")
+                    else:
+                        self.log(f"Готово: {result}")
                     self.download_progress["value"] = 100
                     self.download_status.config(text="Готово.")
-                    self.log(f"Готово: {result}")
+                    self.status_label.config(text="Работа завершена")
                 else:
                     self.download_status.config(text="Ошибка: итоговый файл не найден.")
                     self.log("Ошибка: итоговый файл не найден.")
+                    self.status_label.config(text="Работа завершена")
             except Exception as e:
                 if str(e) == "Загрузка отменена пользователем.":
                     self.download_status.config(text="Загрузка отменена.")
@@ -1944,7 +2035,7 @@ class VDL_GUI(tk.Tk):
         finally:
             self.download_button.config(text="Скачать видео", state="normal")
             self.after(3000, self._hide_download_progress)
-            
+
     def _extract_format_id(self, desc):
         for f in self.formats_full:
             if self._build_desc(f) == desc:
