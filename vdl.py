@@ -765,7 +765,8 @@ def download_video(
         merge_format, platform,
         cookie_file_path=None,
         subtitle_options=None,
-        formats_full=None):
+        formats_full=None,
+        progress_hooks=None):
     """
     Скачивает (и, при необходимости, сливает) выбранные потоки.
     Возвращает путь к итоговому файлу либо None.
@@ -817,7 +818,7 @@ def download_video(
         'writedescription' : False,
         'writeinfojson'    : False,
         'writesubtitles'   : False,
-        'progress_hooks'   : [],      # заполним ниже
+        'progress_hooks'   : progress_hooks or [],
     }
 
     if manifest_mode:
@@ -846,7 +847,12 @@ def download_video(
             last_file = d.get('filename')
             log_debug(f"Файл скачан: {last_file}")
 
-    ydl_opts['progress_hooks'] = [phook]
+    # Объединяем хук из GUI и внутренний хук
+    hooks = []
+    if progress_hooks:
+        hooks.extend(progress_hooks)
+    hooks.append(phook)
+    ydl_opts['progress_hooks'] = hooks
 
     # ---------------- 5. Загрузка с повторами --------------------------
     for attempt in range(1, MAX_RETRIES + 1):
@@ -1369,6 +1375,15 @@ class VDL_GUI(tk.Tk):
         self.status_label = ttk.Label(self, text="Готово", anchor="w")
         self.status_label.grid(row=11, column=0, columnspan=7, sticky="ew", padx=5, pady=2)
 
+        # --- Индикатор скачивания ---
+        self.download_progress = ttk.Progressbar(self, mode="determinate")
+        self.download_progress.grid(row=12, column=0, columnspan=7, sticky="ew", padx=5, pady=2)
+        self.download_progress.grid_remove()
+
+        self.download_status = ttk.Label(self, text="", anchor="w")
+        self.download_status.grid(row=13, column=0, columnspan=7, sticky="ew", padx=5, pady=2)
+        self.download_status.grid_remove()
+
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(9, weight=1)
 
@@ -1827,27 +1842,31 @@ class VDL_GUI(tk.Tk):
         if output_format == "mkv":
             self.log(f"Встраивание субтитров: {'да' if embed_subs else 'нет'}")
             self.log(f"Встраивание глав: {'да' if embed_chapters else 'нет'}")
-    
+
+        self.download_progress.grid()
+        self.download_progress["value"] = 0
+        self.download_status.grid()
+        self.download_status.config(text="Подготовка к скачиванию...")
+
         self.log("Запуск загрузки...")
     
         # Запуск в отдельном потоке
         threading.Thread(target=self.threaded_download_video, args=(
             url, video_id, audio_id,
             output_path, output_name,
-            output_format,  # merge_format
+            output_format,
             self.platform,
             getattr(self, 'cookie_file_path', None),
             subtitle_options,
-            self.formats_full  # <-- добавлено
+            self.formats_full
         ), daemon=True).start()
-    
 
     def threaded_download_video(self, url, video_id, audio_id, output_path, output_name,
                                  merge_format, platform, cookie_file_path, subtitle_options,
                                  formats_full):
         try:
             self.log("Начинаем загрузку видео...")
-    
+
             # Проверка: если video_id уже содержит аудио, обнуляем audio_id
             for f in formats_full:
                 if f.get("format_id") == video_id:
@@ -1857,24 +1876,59 @@ class VDL_GUI(tk.Tk):
                         self.log(f"Выбранный видеоформат {video_id} уже содержит аудиокодек ({acodec}). Аудио-трек не нужен.")
                         audio_id = None
                     break
-    
-            result = download_video(url, video_id, audio_id,
-                                    output_path, output_name,
-                                    merge_format, platform,
-                                    cookie_file_path,
-                                    subtitle_options)
+
+            # --- Прогресс-хук для GUI ---
+            def gui_progress_hook(d):
+                if d['status'] == 'downloading':
+                    downloaded = d.get('downloaded_bytes', 0)
+                    total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                    percent = (downloaded / total * 100) if total else 0
+                    speed = d.get('speed', 0)
+                    eta = d.get('eta', 0)
+                    percent_str = f"{percent:.1f}%"
+                    size_str = f"{downloaded/1024/1024:.2f} МБ / {total/1024/1024:.2f} МБ" if total else f"{downloaded/1024/1024:.2f} МБ"
+                    speed_str = f"{speed/1024:.1f} КБ/с" if speed else ""
+                    eta_str = f"Осталось: {int(eta//60)}м {int(eta%60)}с" if eta else ""
+                    status_text = f"{percent_str} — {size_str} {speed_str} {eta_str}"
+                    self.download_progress["maximum"] = 100
+                    self.download_progress["value"] = percent
+                    self.download_status.config(text=status_text)
+                    self.update_idletasks()
+                elif d['status'] == 'finished':
+                    self.download_progress["value"] = 100
+                    self.download_status.config(text="Скачивание завершено.")
+                    self.update_idletasks()
+
+            result = download_video(
+                url, video_id, audio_id,
+                output_path, output_name,
+                merge_format, platform,
+                cookie_file_path,
+                subtitle_options,
+                progress_hooks=[gui_progress_hook]
+            )
             if result:
+                self.download_progress["value"] = 100
+                self.download_status.config(text="Готово.")
                 self.log(f"Готово: {result}")
             else:
+                self.download_status.config(text="Ошибка: итоговый файл не найден.")
                 self.log("Ошибка: итоговый файл не найден.")
         except Exception as e:
+            self.download_status.config(text=f"Ошибка загрузки: {e}")
             self.log(f"Ошибка загрузки: {e}")
+        finally:
+            self.after(3000, self._hide_download_progress)
 
     def _extract_format_id(self, desc):
         for f in self.formats_full:
             if self._build_desc(f) == desc:
                 return f.get('format_id')
         return None
+
+    def _hide_download_progress(self):
+        self.download_progress.grid_remove()
+        self.download_status.grid_remove()
 
     def _build_desc(self, f):
         """Собирает строку описания формата, аналогично populate_from_analysis."""
