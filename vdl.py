@@ -1360,7 +1360,18 @@ class VDL_GUI(tk.Tk):
 
         self.log_text = tk.Text(self, height=15)
         self.log_text.grid(row=9, column=0, columnspan=7, sticky="nsew", padx=5, pady=5)
-    
+
+        # --- Индикатор анализа ---
+        self.analyze_progress = ttk.Progressbar(self, mode="indeterminate")
+        self.analyze_progress.grid(row=10, column=0, columnspan=7, sticky="ew", padx=5, pady=2)
+        self.analyze_progress.grid_remove()  # Скрыт по умолчанию
+
+        self.status_label = ttk.Label(self, text="Готово", anchor="w")
+        self.status_label.grid(row=11, column=0, columnspan=7, sticky="ew", padx=5, pady=2)
+
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(9, weight=1)
+
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(9, weight=1)
     
@@ -1388,20 +1399,25 @@ class VDL_GUI(tk.Tk):
             return
         self.log(f"Начинаем анализ ссылки: {url}")
         self.btn_analyze.config(state='disabled')
+        self.analyze_progress.grid()
+        self.analyze_progress.start()
+        self.status_label.config(text="Анализ...")
         threading.Thread(target=self.threaded_analyze, args=(url,), daemon=True).start()
 
     def threaded_analyze(self, url):
         try:
             data = analyze_url_for_gui(url)
-    
-            self.platform = data.get("platform")  # Устанавливаем platform для использования в дальнейшем
-    
+            self.platform = data.get("platform")
             self.populate_from_analysis(data)
             self.log("Анализ завершён.")
+            self.status_label.config(text="Готово")
         except Exception as e:
             self.log(f"Ошибка анализа: {e}")
+            self.status_label.config(text="Ошибка анализа")
         finally:
             self.btn_analyze.config(state='normal')
+            self.analyze_progress.stop()
+            self.analyze_progress.grid_remove()
 
     def populate_from_analysis(self, data):
         self.formats_full = data.get('formats_full', [])
