@@ -1509,6 +1509,7 @@ class VDL_GUI(tk.Tk):
         self.chapters_check.config(state='normal' if chapters else 'disabled')
     
         self.chapters_available = bool(chapters)
+        self.last_chapters = data.get('chapters')
 
         self.log(f"Название видео: {data.get('title')}")
         self.log(f"Платформа: {data.get('platform')}")
@@ -1779,6 +1780,19 @@ class VDL_GUI(tk.Tk):
         output_name = os.path.splitext(os.path.basename(file_path))[0]
         output_path = os.path.dirname(file_path)
         output_format = ext
+        
+        # --- Новый блок: сохраняем главы в файл, если выбран чекбокс "Сохранить главы" ---
+        chapters_saved_path = None
+        if save_chapters and getattr(self, 'chapters_available', False):
+            chapters = getattr(self, 'last_chapters', None)
+            if chapters:
+                chapters_saved_path = os.path.join(output_path, f"{output_name}.chapters.txt")
+                if save_chapters_to_file(chapters, chapters_saved_path):
+                    self.log(f"Главы сохранены в файл: {chapters_saved_path}")
+                else:
+                    self.log(f"Ошибка при сохранении глав в файл: {chapters_saved_path}")
+            else:
+                self.log("Главы не найдены для сохранения.")        
     
         embed_subs = self.embed_subs_var.get() if output_format == "mkv" else False
         embed_chapters = self.embed_chapters_var.get() if output_format == "mkv" else False
@@ -1806,6 +1820,8 @@ class VDL_GUI(tk.Tk):
         self.log(f"Субтитры: {', '.join(subtitles) if subtitles else 'нет'}")
         self.log(f"Авто-субтитры: {', '.join(auto_subs) if auto_subs else 'нет'}")
         self.log(f"Главы: {'да' if save_chapters else 'нет'}")
+        if chapters_saved_path:
+            self.log(f"Файл глав: {chapters_saved_path}")        
         self.log(f"Имя файла: {output_name}")
         self.log(f"Формат выходного файла: {output_format}")
         if output_format == "mkv":
