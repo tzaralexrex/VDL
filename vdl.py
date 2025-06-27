@@ -641,7 +641,7 @@ def select_output_folder():
     foreground_window = user32.GetForegroundWindow()
     user32.AttachThreadInput(user32.GetWindowThreadProcessId(foreground_window, None), current_thread_id, True)
 
-    root = Tk()
+    root = tk.Tk()
     root.withdraw()
     folder = filedialog.askdirectory(title="Выберите папку")
     root.destroy()
