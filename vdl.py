@@ -1373,8 +1373,18 @@ class VDL_GUI(tk.Tk):
         self.download_button = ttk.Button(self, text="Скачать видео", command=self.on_download_click)
         self.download_button.grid(row=8, column=1, columnspan=5, sticky="ew", padx=5, pady=10)
 
-        self.log_text = tk.Text(self, height=15)
-        self.log_text.grid(row=9, column=0, columnspan=7, sticky="nsew", padx=5, pady=5)
+        # --- Окно вывода логов с вертикальным скроллбаром ---
+        log_frame = ttk.Frame(self)
+        log_frame.grid(row=9, column=0, columnspan=7, sticky="nsew", padx=5, pady=5)
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+
+        self.log_text = tk.Text(log_frame, height=15, wrap="word")
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+
+        log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log_text["yscrollcommand"] = log_scrollbar.set
 
         # --- Индикатор анализа ---
         self.analyze_progress = ttk.Progressbar(self, mode="indeterminate")
