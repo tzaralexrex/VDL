@@ -48,6 +48,7 @@ def import_or_install(package, import_name=None, pip_name=None, silent=False):
 yt_dlp = import_or_install('yt_dlp')
 browser_cookie3 = import_or_install('browser_cookie3')
 colorama = import_or_install('colorama')
+psutil = import_or_install('psutil')
 
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
@@ -854,25 +855,61 @@ def download_video(
             return None
 
         except DownloadError as e:
-            err = str(e)
-            retriable = any(key in err for key in (
-                "Got error:",           # обрыв потока
-                "read,",
-                "Read timed out",
-                "retry",
-                "HTTP Error 5",
+            err_text = str(e)
+            retriable = any(key in err_text for key in (
+                "Got error:", "read,", "Read timed out", "retry", "HTTP Error 5",
             ))
 
-            log_debug(f"DownloadError: {err} (retriable={retriable})")
+            log_debug(f"DownloadError: {err_text} (retriable={retriable})")
+
+            # Доп. проверка на блокировку .part-файла
+            if "being used by another process" in err_text or "access is denied" in err_text.lower():
+                log_debug("Попытка устранить блокировку .part-файла.")
+                try:
+                    part_file = None
+                    base_path = os.path.join(output_path, output_name)
+                    for ext_try in ("m4a", "webm", "mp4", "mkv"):
+                        part_candidate = (
+                            base_path + f".f{audio_id}.{ext_try}.part" if audio_id
+                            else base_path + f".{ext_try}.part"
+                        )
+                        if os.path.exists(part_candidate):
+                            part_file = part_candidate
+                            break
+
+                    if part_file:
+                        try:
+                            import psutil
+                            for proc in psutil.process_iter(['pid', 'name']):
+                                try:
+                                    for f in proc.open_files():
+                                        if os.path.samefile(f.path, part_file):
+                                            pname = proc.name()
+                                            pid = proc.pid
+                                            log_debug(f"Файл блокирует: {pname} (PID {pid})")
+                                            print(Fore.RED + f"Файл блокирует {pname} (PID {pid}) — закрой процесс и повтори." + Style.RESET_ALL)
+                                            break
+                                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                    continue
+                        except ImportError:
+                            log_debug("psutil не установлен — не можем определить блокирующий процесс.")
+
+                        # Попробуем удалить файл (на свой страх и риск)
+                        try:
+                            os.remove(part_file)
+                            log_debug("Удалили .part-файл.")
+                        except Exception as del_err:
+                            log_debug(f"Не удалось удалить файл: {del_err}")
+                except Exception as general_err:
+                    log_debug(f"Ошибка в блоке устранения блокировки: {general_err}")
 
             if retriable and attempt < MAX_RETRIES:
-                print(Fore.YELLOW + f"Обрыв загрузки (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…"
-                      + Style.RESET_ALL)
-                log_debug("Повторная попытка после обрыва.")
+                print(Fore.YELLOW + f"Обрыв загрузки (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
                 time.sleep(5)
                 continue
             else:
                 raise
+
 
         except Exception as e:
             # Любая другая ошибка – пробрасываем после логирования
