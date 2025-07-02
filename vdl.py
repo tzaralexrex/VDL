@@ -903,7 +903,22 @@ def download_video(
                 except Exception as general_err:
                     log_debug(f"Ошибка в блоке устранения блокировки: {general_err}")
 
+            # --- Новый блок: обновление куков перед повтором ---
             if retriable and attempt < MAX_RETRIES:
+                # Только для поддерживаемых платформ
+                cookie_map = {
+                    "youtube": COOKIES_YT,
+                    "facebook": COOKIES_FB,
+                    "vimeo": COOKIES_VI,
+                    "rutube": COOKIES_RT,
+                    "vk": COOKIES_VK,
+                }
+                if platform in cookie_map:
+                    new_cookie_file = get_cookies_for_platform(platform, cookie_map[platform])
+                    if new_cookie_file:
+                        cookie_file_path = new_cookie_file
+                        ydl_opts['cookiefile'] = cookie_file_path
+                        log_debug(f"Перед повтором обновили cookiefile: {cookie_file_path}")
                 print(Fore.YELLOW + f"Обрыв загрузки (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
                 time.sleep(5)
                 continue
@@ -963,6 +978,22 @@ def main():
     output_format = None
     video_id = None
     audio_id = None
+
+    # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
+    subtitle_files = []
+    subtitle_format = 'srt'
+    subs_to_integrate_langs = []
+    integrate_subs = False
+    keep_sub_files = True
+    integrate_chapters = False
+    keep_chapter_file = False
+    chapter_filename = None
+    current_processing_file = None
+    desired_ext = None
+    video_ext = ''
+    audio_ext = ''
+    video_codec = ''
+    audio_codec = ''
 
     try:
         platform, url = extract_platform_and_url(raw_url)
