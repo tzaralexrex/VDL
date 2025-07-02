@@ -3,15 +3,44 @@
 from pathlib import Path
 from datetime import datetime
 from shutil import which
-import importlib
 import subprocess
 import sys
-import os
 import re
 import time
 import traceback
 import http.cookiejar
 import ctypes
+import importlib
+import os
+import sys
+
+# --- Автоимпорт и автоустановка requests и packaging ---
+def ensure_base_dependencies():
+    """
+    Проверяет и при необходимости устанавливает requests и packaging.
+    Импортирует их глобально для дальнейшего использования.
+    """
+
+    base_packages = ["requests", "packaging"]
+    for pkg in base_packages:
+        try:
+            importlib.import_module(pkg)
+        except ImportError:
+            print(f"[!] Необходимый модуль {pkg} не найден. Устанавливаем...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+    # Глобальный импорт
+    global requests, packaging
+    import requests
+    import packaging
+    from packaging.version import parse as parse_version
+    packaging.parse_version = parse_version  # для удобства
+
+ensure_base_dependencies()
+
+try:
+    from importlib.metadata import version as get_version, PackageNotFoundError
+except ImportError:
+    from importlib_metadata import version as get_version, PackageNotFoundError  # type: ignore
 
 # --- Универсальный импорт и автообновление внешних модулей ---
 def import_or_update(module_name, pypi_name=None, min_version=None):
@@ -22,26 +51,30 @@ def import_or_update(module_name, pypi_name=None, min_version=None):
     :param min_version: минимальная версия (опционально)
     :return: импортированный модуль
     """
-    import pkg_resources
     pypi_name = pypi_name or module_name
     try:
         module = importlib.import_module(module_name)
         # Проверка актуальности версии
         try:
-            import requests
             resp = requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
             if resp.ok:
                 latest = resp.json()['info']['version']
-                installed = getattr(module, '__version__', None)
-                if installed and pkg_resources.parse_version(installed) < pkg_resources.parse_version(latest):
+                try:
+                    installed = get_version(pypi_name)
+                except PackageNotFoundError:
+                    installed = getattr(module, '__version__', None)
+                if installed and packaging.parse_version(installed) < packaging.parse_version(latest):
                     print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...")
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
                     module = importlib.reload(module)
         except Exception as e:
             print(f"[!] Не удалось проверить или обновить {pypi_name}: {e}")
         if min_version:
-            installed = getattr(module, '__version__', None)
-            if installed and pkg_resources.parse_version(installed) < pkg_resources.parse_version(min_version):
+            try:
+                installed = get_version(pypi_name)
+            except PackageNotFoundError:
+                installed = getattr(module, '__version__', None)
+            if installed and packaging.parse_version(installed) < packaging.parse_version(min_version):
                 print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
                 module = importlib.reload(module)
@@ -1228,7 +1261,6 @@ def main():
                             log_debug(f"Удалён существующий файл перед переименованием: {final_target_filename}")
                         except Exception as e:
                             log_debug(f"Не удалось удалить существующий файл перед переименованием: {e}")
-                            print(Fore.RED + f"Не удалось удалить файл '{final_target_filename}' перед переименованием: {e}" + Style.RESET_ALL)
                             final_target_filename = current_processing_file  # fallback
                             raise e  # пробрасываем исключение, чтобы не делать переименование
                     os.rename(current_processing_file, final_target_filename)
