@@ -1,54 +1,61 @@
 # Universal Video Downloader with Cookie Browser Support
 
-import sys
-import subprocess
-import importlib
-import os
-import re
-import shutil
-import time
-import ctypes
-import json
-import threading
-import tempfile
-import argparse
-import logging
-import traceback
-import http.cookiejar
-import glob
 from pathlib import Path
 from datetime import datetime
 from shutil import which
+import importlib
+import subprocess
+import sys
+import os
+import re
+import time
+import traceback
+import http.cookiejar
+import ctypes
 
-def import_or_install(package, import_name=None, pip_name=None, silent=False):
-    """Пробует импортировать пакет, если не удаётся — предлагает установить через pip.
-    package: строка для import
-    import_name: строка для импорта, если отличается от pip_name
-    pip_name: название пакета в pip (если отличается)
-    silent: если True — не спрашивать пользователя, сразу пытаться установить
+# --- Универсальный импорт и автообновление внешних модулей ---
+def import_or_update(module_name, pypi_name=None, min_version=None):
     """
+    Импортирует модуль, при необходимости устанавливает или обновляет его до актуальной версии с PyPI.
+    :param module_name: имя для importlib.import_module
+    :param pypi_name: имя пакета на PyPI (если отличается)
+    :param min_version: минимальная версия (опционально)
+    :return: импортированный модуль
+    """
+    import pkg_resources
+    pypi_name = pypi_name or module_name
     try:
-        return importlib.import_module(import_name or package)
-    except ImportError:
-        pip_name = pip_name or package
-        print(f"[!] Необходим внешний модуль: {pip_name}")
-        if not silent:
-            answer = input(f"→ Установить {pip_name} через pip сейчас? [Y/n]: ").strip().lower()
-            if answer and answer not in ('y', 'д', ''):
-                print(f"Пожалуйста, установите пакет вручную: pip install {pip_name}")
-                sys.exit(1)
+        module = importlib.import_module(module_name)
+        # Проверка актуальности версии
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+            import requests
+            resp = requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
+            if resp.ok:
+                latest = resp.json()['info']['version']
+                installed = getattr(module, '__version__', None)
+                if installed and pkg_resources.parse_version(installed) < pkg_resources.parse_version(latest):
+                    print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...")
+                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
+                    module = importlib.reload(module)
         except Exception as e:
-            print(f"Ошибка установки {pip_name}: {e}\nУстановите пакет вручную: pip install {pip_name}")
-            sys.exit(1)
-        # Повторный импорт
-        return importlib.import_module(import_name or package)
+            print(f"[!] Не удалось проверить или обновить {pypi_name}: {e}")
+        if min_version:
+            installed = getattr(module, '__version__', None)
+            if installed and pkg_resources.parse_version(installed) < pkg_resources.parse_version(min_version):
+                print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
+                module = importlib.reload(module)
+        return module
+    except ImportError:
+        print(f"[!] {pypi_name} не установлен. Устанавливаем...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pypi_name])
+        return importlib.import_module(module_name)
 
-yt_dlp = import_or_install('yt_dlp')
-browser_cookie3 = import_or_install('browser_cookie3')
-colorama = import_or_install('colorama')
-psutil = import_or_install('psutil')
+# Импорт сторонних модулей через универсальную функцию
+yt_dlp = import_or_update('yt_dlp')
+browser_cookie3 = import_or_update('browser_cookie3')
+colorama = import_or_update('colorama')
+psutil = import_or_update('psutil')
 
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
