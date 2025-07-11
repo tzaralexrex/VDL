@@ -12,6 +12,7 @@ import http.cookiejar
 import ctypes
 import importlib
 import os
+import platform
 
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
@@ -124,8 +125,8 @@ from browser_cookie3 import BrowserCookieError
 from colorama import init, Fore, Style
 
 try:
+    from tkinter import filedialog, Tk
     import tkinter as tk
-    from tkinter import filedialog
 except ImportError:
     tk = None
     filedialog = None
@@ -694,22 +695,40 @@ def ask_and_select_subtitles(info):
 
 def select_output_folder():
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
-    
-    # Сохраняем хэндл активного окна
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    current_thread_id = kernel32.GetCurrentThreadId()
-    foreground_window = user32.GetForegroundWindow()
-    user32.AttachThreadInput(user32.GetWindowThreadProcessId(foreground_window, None), current_thread_id, True)
+    system = platform.system().lower()
+    if system == "windows" and tk is not None and filedialog is not None:
+        try:
+            # Сохраняем хэндл активного окна
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            current_thread_id = kernel32.GetCurrentThreadId()
+            foreground_window = user32.GetForegroundWindow()
+            user32.AttachThreadInput(user32.GetWindowThreadProcessId(foreground_window, None), current_thread_id, True)
 
-    root = tk.Tk()
-    root.withdraw()
-    folder = filedialog.askdirectory(title="Выберите папку")
-    root.destroy()
+            root = tk.Tk()
+            root.withdraw()
+            folder = filedialog.askdirectory(title="Выберите папку")
+            root.destroy()
 
-    # Возвращаем фокус обратно к окну
-    user32.SetForegroundWindow(foreground_window)
-    return folder
+            # Возвращаем фокус обратно к окну
+            user32.SetForegroundWindow(foreground_window)
+            if folder:
+                return folder
+            else:
+                print(Fore.YELLOW + "Папка не выбрана. Попробуйте снова." + Style.RESET_ALL)
+        except Exception as e:
+            print(Fore.YELLOW + f"Ошибка при открытии диалога выбора папки: {e}" + Style.RESET_ALL)
+            log_debug(f"Ошибка выбора папки через tkinter: {e}")
+    # Fallback для не-Windows или если tkinter не работает
+    while True:
+        folder = input(Fore.CYAN + "Введите путь к папке для сохранения: " + Style.RESET_ALL).strip()
+        if not folder:
+            print(Fore.YELLOW + "Путь не введён. Попробуйте снова." + Style.RESET_ALL)
+            continue
+        if not os.path.isdir(folder):
+            print(Fore.RED + f"Папка '{folder}' не существует. Попробуйте снова." + Style.RESET_ALL)
+            continue
+        return folder
 
 def ask_output_filename(default_name, output_path, output_format):
     """
