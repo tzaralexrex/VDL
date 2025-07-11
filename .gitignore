@@ -1,0 +1,9 @@
+# Логи
+debug.log
+
+# Файлы cookies
+cookies_*.txt
+
+# Другие временные/рабочие файлы
+*.ffmeta
+*.part
