@@ -14,7 +14,7 @@ import importlib
 import os
 import platform
 
-DEBUG = 0  # Глобальная переменная для включения/выключения отладки
+DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
 DEBUG_FILE = 'debug.log'
@@ -1077,59 +1077,76 @@ def main():
                 print(f"{idx}. {title}")
 
             def parse_selection(selection, total):
-                while True:
-                    result = set()
-                    if not selection or selection.strip() == '0':
-                        return set(range(1, total + 1))
-                    tokens = [p.strip() for p in re.split(r'[ ,]+', selection) if p.strip()]
-                    i = 0
-                    skip_error = False
-                    while i < len(tokens):
-                        token = tokens[i]
-                        # Диапазон с тире внутри (например, 2-5)
-                        if '-' in token and not token.endswith('-'):
-                            try:
-                                start, end = map(int, token.split('-', 1))
-                                if start > end:
-                                    print(Fore.RED + f"Ошибка: диапазон {start}-{end} некорректен (обратный диапазон)." + Style.RESET_ALL)
-                                    skip_error = True
-                                    break
-                                if 1 <= start <= end <= total:
-                                    result.update(range(start, end + 1))
-                            except Exception:
-                                pass
+                """
+                Расширенный парсер выбора номеров видео:
+                - Поддержка диапазонов (1-5, 3-)
+                - Открытый конец (7-), в середине списка трактуется как диапазон до следующего числа
+                - Проверка на ошибки диапазонов и номеров
+                - Вывод предупреждений при ошибках
+                """
+                result = set()
+                errors = []
+                if not selection or selection.strip() == '0':
+                    return set(range(1, total + 1))
+                parts = [p.strip() for p in re.split(r'[ ,;]+', selection) if p.strip()]
+                i = 0
+                while i < len(parts):
+                    part = parts[i]
+                    if '-' in part:
+                        # Диапазон N-M
+                        if re.fullmatch(r'\d+-\d+', part):
+                            start, end = map(int, part.split('-', 1))
+                            if start > end:
+                                errors.append(f"Диапазон '{part}': начало больше конца")
+                            elif not (1 <= start <= total) or not (1 <= end <= total):
+                                errors.append(f"Диапазон '{part}' вне диапазона 1-{total}")
+                            else:
+                                result.update(range(start, end + 1))
                             i += 1
-                        # Открытый диапазон (например, 6-)
-                        elif token.endswith('-') and token[:-1].isdigit():
-                            start = int(token[:-1])
-                            # Если за ним есть число, объединяем как диапазон
-                            if i + 1 < len(tokens) and tokens[i + 1].isdigit():
-                                end = int(tokens[i + 1])
+                            continue
+                        # Открытый диапазон N-
+                        elif re.fullmatch(r'\d+-', part):
+                            start = int(part[:-1])
+                            # Если это не последний элемент и следующий — число, трактуем как диапазон N-M
+                            if i + 1 < len(parts) and parts[i + 1].isdigit():
+                                end = int(parts[i + 1])
                                 if start > end:
-                                    print(Fore.RED + f"Ошибка: диапазон {start}-{end} некорректен (обратный диапазон)." + Style.RESET_ALL)
-                                    skip_error = True
-                                    break
-                                if 1 <= start <= end <= total:
+                                    errors.append(f"Диапазон '{start}-{end}': начало больше конца")
+                                elif not (1 <= start <= total) or not (1 <= end <= total):
+                                    errors.append(f"Диапазон '{start}-{end}' вне диапазона 1-{total}")
+                                else:
                                     result.update(range(start, end + 1))
                                 i += 2
+                                continue
                             else:
-                                # До конца плейлиста
+                                # Открытый диапазон до конца
                                 if 1 <= start <= total:
                                     result.update(range(start, total + 1))
+                                else:
+                                    errors.append(f"Открытый диапазон '{part}' вне диапазона 1-{total}")
                                 i += 1
-                        # Просто число
+                                continue
                         else:
-                            try:
-                                num = int(token)
-                                if 1 <= num <= total:
-                                    result.add(num)
-                            except Exception:
-                                pass
+                            errors.append(f"Некорректный диапазон: '{part}'")
                             i += 1
-                    if skip_error:
-                        selection = input(Fore.CYAN + "Ошибка в диапазоне. Повторите ввод номеров видео: " + Style.RESET_ALL)
-                        continue
-                    return sorted(result)
+                            continue
+                    else:
+                        # Одиночное число
+                        if part.isdigit():
+                            num = int(part)
+                            if 1 <= num <= total:
+                                result.add(num)
+                            else:
+                                errors.append(f"Номер '{num}' вне диапазона 1-{total}")
+                        else:
+                            errors.append(f"Некорректный номер: '{part}'")
+                        i += 1
+                if errors:
+                    print(Fore.YELLOW + "Внимание! Обнаружены ошибки в выборе номеров:")
+                    for err in errors:
+                        print("  - " + err)
+                    print(Style.RESET_ALL)
+                return sorted(result)
 
             print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
             sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
@@ -1412,8 +1429,7 @@ def main():
                     if output_format.lower() == 'mkv' and has_chapters:
                         chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                         integrate_chapters = chaps != "0"
-                       
-                        log_debug(f"Интеграция глав: {integrация глав: {integrate_chapters}")
+                        log_debug(f"Интеграция глав: {integrate_chapters}")
                         if integrate_chapters:
                             keep = input(Fore.CYAN + "Сохранять файл с главами отдельно? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
                             keep_chapter_file = keep == "1"
