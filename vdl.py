@@ -1474,6 +1474,91 @@ def main():
                     log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
             print(Fore.CYAN + "\nВсе выбранные видео из плейлиста обработаны." + Style.RESET_ALL)
             return  # После плейлиста завершаем выполнение
+        # --- Одиночное видео ---
+        else:
+            print(Fore.YELLOW + "\nОбнаружено одиночное видео." + Style.RESET_ALL)
+            log_debug("Обнаружено одиночное видео.")
+            chapters = info.get("chapters")
+            has_chapters = isinstance(chapters, list) and len(chapters) > 0
+            video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
+            if video_id == "bestvideo+bestaudio/best":
+                quality_map = {
+                    "0": ("bestvideo+bestaudio/best", "Максимальное"),
+                    "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                    "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                    "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                    "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+                }
+                print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
+                for key, (_, label) in quality_map.items():
+                    print(f"{key}: {label}")
+                choice = input(Fore.CYAN + "Номер (Enter = 0): " + Style.RESET_ALL).strip() or "0"
+                selected = quality_map.get(choice, quality_map["0"])
+                video_id = selected[0]
+                log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
+            subtitle_download_options = ask_and_select_subtitles(info)
+            save_chapter_file = False
+            integrate_chapters = False
+            keep_chapter_file = False
+            chapter_filename = None
+            if has_chapters:
+                ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                save_chapter_file = ask_chaps != "0"
+                log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
+            output_path = select_output_folder()
+            output_format = ask_output_format(desired_ext)
+            integrate_subs = False
+            keep_sub_files = True
+            subs_to_integrate_langs = []
+            if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
+                available_langs = subtitle_download_options['subtitleslangs']
+                print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
+                      "\n  Введите номера или коды языков (через запятую или пробел)."
+                      "\n  Enter, 0 или all — интегрировать ВСЕ."
+                      "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
+                for sidx, lang in enumerate(available_langs, 1):
+                    print(f"{sidx}: {lang}")
+                sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
+                if sel in ("", "0", "all"):
+                    integrate_subs = True
+                    subs_to_integrate_langs = available_langs
+                elif sel == "-":
+                    integrate_subs = False
+                else:
+                    parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+                    for p in parts:
+                        if p.isdigit():
+                            i = int(p) - 1
+                            if 0 <= i < len(available_langs):
+                                subs_to_integrate_langs.append(available_langs[i])
+                        elif p in available_langs:
+                            subs_to_integrate_langs.append(p)
+                    integrate_subs = bool(subs_to_integrate_langs)
+            log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
+            if output_format.lower() == 'mkv' and has_chapters:
+                ask_chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                integrate_chapters = ask_chaps != "0"
+                log_debug(f"Пользователь выбрал интеграцию глав: {integrate_chapters}")
+            default_title = info.get('title', 'video')
+            safe_title = re.sub(r'[<>:\"/\\\\|?*]', '', default_title)
+            log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
+            output_name = ask_output_filename(safe_title, output_path, output_format)
+            log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
+            if (save_chapter_file or integrate_chapters) and has_chapters:
+                chapter_filename = os.path.join(output_path, output_name + ".ffmeta")
+                save_chapters_to_file(chapters, chapter_filename)
+            # Запуск загрузки видео
+            downloaded_file = download_video(
+                url, video_id, audio_id,
+                output_path, output_name,
+                output_format, platform,
+                cookie_file_to_use,
+                subtitle_download_options
+            )
+            if downloaded_file:
+                print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+            else:
+                print(Fore.RED + "\nОшибка при скачивании видео." + Style.RESET_ALL)
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
         log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
