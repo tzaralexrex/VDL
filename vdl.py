@@ -14,6 +14,20 @@ import importlib
 import os
 import sys
 
+DEBUG = 1  # Глобальная переменная для включения/выключения отладки
+DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
+
+DEBUG_FILE = 'debug.log'
+
+COOKIES_FB = 'cookies_fb.txt'
+COOKIES_YT = 'cookies_yt.txt'
+COOKIES_VI = 'cookies_vi.txt'   # Vimeo
+COOKIES_RT = 'cookies_rt.txt'   # Rutube
+COOKIES_VK = 'cookies_vk.txt'   # VK
+COOKIES_GOOGLE = "cookies_google.txt"
+
+MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
+
 # --- Автоимпорт и автоустановка requests и packaging ---
 def ensure_base_dependencies():
     """
@@ -52,6 +66,7 @@ def import_or_update(module_name, pypi_name=None, min_version=None):
     :return: импортированный модуль
     """
     pypi_name = pypi_name or module_name
+    print(f"Проверяю наличие и актуальность модуля {pypi_name}", end='', flush=True)
     try:
         module = importlib.import_module(module_name)
         # Проверка актуальности версии
@@ -64,10 +79,13 @@ def import_or_update(module_name, pypi_name=None, min_version=None):
                 except PackageNotFoundError:
                     installed = getattr(module, '__version__', None)
                 if installed and packaging.parse_version(installed) < packaging.parse_version(latest):
-                    print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...")
+                    print()  # Завершить строку перед сообщением
+                    print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
                     module = importlib.reload(module)
+            print(" - OK")
         except Exception as e:
+            print()  # Завершить строку перед сообщением
             print(f"[!] Не удалось проверить или обновить {pypi_name}: {e}")
         if min_version:
             try:
@@ -75,11 +93,13 @@ def import_or_update(module_name, pypi_name=None, min_version=None):
             except PackageNotFoundError:
                 installed = getattr(module, '__version__', None)
             if installed and packaging.parse_version(installed) < packaging.parse_version(min_version):
+                print()  # Завершить строку перед сообщением
                 print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
                 module = importlib.reload(module)
         return module
     except ImportError:
+        print()  # Завершить строку перед сообщением
         print(f"[!] {pypi_name} не установлен. Устанавливаем...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pypi_name])
         return importlib.import_module(module_name)
@@ -101,20 +121,6 @@ except ImportError:
     tk = None
 
 init(autoreset=True)  # инициализация colorama и автоматический сброс цвета после каждого print
-
-DEBUG = 1  # Глобальная переменная для включения/выключения отладки
-DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
-
-DEBUG_FILE = 'debug.log'
-
-COOKIES_FB = 'cookies_fb.txt'
-COOKIES_YT = 'cookies_yt.txt'
-COOKIES_VI = 'cookies_vi.txt'   # Vimeo
-COOKIES_RT = 'cookies_rt.txt'   # Rutube
-COOKIES_VK = 'cookies_vk.txt'   # VK
-COOKIES_GOOGLE = "cookies_google.txt"
-
-MAX_RETRIES = 5  # Максимум попыток повторной загрузки при обрывах
 
 debug_file_initialized = False
 
