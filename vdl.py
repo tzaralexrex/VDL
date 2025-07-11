@@ -1272,8 +1272,19 @@ def main():
                         default_title = entry_info.get('title', f'video_{idx}')
                         safe_title = re.sub(r'[<>:"/\\|?*]', '', default_title)
                         log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                        output_name = ask_output_filename(safe_title, output_path, output_format)
-                        log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}' (автоматический режим)")
+                        # --- Автоматический подбор имени файла, если файл уже существует ---
+                        def get_unique_filename(base_name, output_path, output_format):
+                            candidate = f"{base_name}.{output_format}"
+                            if not os.path.exists(os.path.join(output_path, candidate)):
+                                return base_name
+                            idx = 2
+                            while True:
+                                candidate = f"{base_name}_{idx}.{output_format}"
+                                if not os.path.exists(os.path.join(output_path, candidate)):
+                                    return f"{base_name}_{idx}"
+                                idx += 1
+                        output_name = get_unique_filename(safe_title, output_path, output_format)
+                        log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
                         if (save_chapter_file or integrate_chapters) and has_chapters:
                             chapter_filename = os.path.join(output_path, f"{output_name}.chapters.txt")
                             save_chapters_to_file(chapters, chapter_filename)
@@ -1382,8 +1393,19 @@ def main():
                     default_title = entry_info.get('title', f'video_{idx}')
                     safe_title = re.sub(r'[<>:"/\\|?*]', '', default_title)
                     log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                    output_name = ask_output_filename(safe_title, output_path, output_format)
-                    log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
+                    # --- Автоматический подбор имени файла, если файл уже существует ---
+                    def get_unique_filename(base_name, output_path, output_format):
+                        candidate = f"{base_name}.{output_format}"
+                        if not os.path.exists(os.path.join(output_path, candidate)):
+                            return base_name
+                        idx = 2
+                        while True:
+                            candidate = f"{base_name}_{idx}.{output_format}"
+                            if not os.path.exists(os.path.join(output_path, candidate)):
+                                return f"{base_name}_{idx}"
+                            idx += 1
+                    output_name = get_unique_filename(safe_title, output_path, output_format)
+                    log_debug(f"Финальное имя файла (автоматически): '{output_name}'")
                     if (save_chapter_file or integrate_chapters) and has_chapters:
                         chapter_filename = os.path.join(output_path, f"{output_name}.chapters.txt")
                         save_chapters_to_file(chapters, chapter_filename)
