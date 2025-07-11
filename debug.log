@@ -1,58 +1,20 @@
 
 ============================================================
---- Начинается новый сеанс отладки [2025-07-11 12:45:48.010269] ---
-[2025-07-11 12:45:48.009081] Поиск ffmpeg: Проверяем локальный путь: c:\Users\TeplyakovAV\VDL\ffmpeg.exe
-[2025-07-11 12:45:48.019051] Поиск ffmpeg: Проверяем системный PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:45:48.020203] FFmpeg найден в системном PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:46:35.081586] Введена ссылка: https://www.facebook.com/vivaladirtleague/videos/780300402480349/?__cft__[0]=AZUNJAlDkXbmTm40vLKI13_uFQjbk-ZsnIRjmimaVxmFpOlz4S-Vp3QA4bE6tbH9kqe7r9LFDtT5ERemCoTVcKiyke9kR-6Kqx2O3N8FVm_E1W4L6q8qbf-eqk_pqZrjIfoghXzbuTh6DH2yYh5REu3zQl1OUwwouL_g7XVH1PVBSLLxSTRLOSnqxtkp2JIrJt8R1DgIZ7m2ZWQJmICbpem9&__tn__=%2CO%2CP-R
-[2025-07-11 12:46:35.083341] Определена платформа: facebook для URL: https://m.facebook.com/watch/?v=780300402480349&_rdr
-[2025-07-11 12:46:39.013034] Файл куков 'cookies_fb.txt' существует и прошёл проверку. Используем его.
-[2025-07-11 12:46:39.013772] get_video_info: Используем cookiefile: cookies_fb.txt
-[2025-07-11 12:46:39.014437] get_video_info: Запрос информации для URL: https://m.facebook.com/watch/?v=780300402480349&_rdr с опциями: {'quiet': True, 'skip_download': True, 'cookiefile': 'cookies_fb.txt'}
-[2025-07-11 12:46:48.809893] get_video_info: Получена информация о видео. Title: Obvious traps - Viva La Dirt League, ID: 780300402480349
-[2025-07-11 12:46:48.813670] Наличие глав: False
-[2025-07-11 12:46:51.584875] Выбран видеоформат: id=1078218367704492v, ext=mp4, vcodec=vp09.00.40.08.00.01.01.01.00
-[2025-07-11 12:46:52.657051] Выбран аудио: id=3072845932893747a, ext=m4a, acodec=mp4a.40.5
-[2025-07-11 12:46:57.369564] Начальный/дефолтный выходной формат: mp4 (индекс 0)
-
-============================================================
---- Начинается новый сеанс отладки [2025-07-11 12:47:37.314080] ---
-[2025-07-11 12:47:37.313622] Поиск ffmpeg: Проверяем локальный путь: C:\Users\TeplyakovAV\VDL\ffmpeg.exe
-[2025-07-11 12:47:37.318724] Поиск ffmpeg: Проверяем системный PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:47:37.319380] FFmpeg найден в системном PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:47:38.461616] Введена ссылка: https://www.facebook.com/vivaladirtleague/videos/780300402480349/?__cft__[0]=AZUNJAlDkXbmTm40vLKI13_uFQjbk-ZsnIRjmimaVxmFpOlz4S-Vp3QA4bE6tbH9kqe7r9LFDtT5ERemCoTVcKiyke9kR-6Kqx2O3N8FVm_E1W4L6q8qbf-eqk_pqZrjIfoghXzbuTh6DH2yYh5REu3zQl1OUwwouL_g7XVH1PVBSLLxSTRLOSnqxtkp2JIrJt8R1DgIZ7m2ZWQJmICbpem9&__tn__=%2CO%2CP-R
-[2025-07-11 12:47:38.463217] Определена платформа: facebook для URL: https://m.facebook.com/watch/?v=780300402480349&_rdr
-[2025-07-11 12:47:41.151018] Файл куков 'cookies_fb.txt' существует и прошёл проверку. Используем его.
-[2025-07-11 12:47:41.151568] get_video_info: Используем cookiefile: cookies_fb.txt
-[2025-07-11 12:47:41.151973] get_video_info: Запрос информации для URL: https://m.facebook.com/watch/?v=780300402480349&_rdr с опциями: {'quiet': True, 'skip_download': True, 'cookiefile': 'cookies_fb.txt'}
-[2025-07-11 12:47:45.472065] get_video_info: Получена информация о видео. Title: Obvious traps - Viva La Dirt League, ID: 780300402480349
-[2025-07-11 12:47:45.475096] Наличие глав: False
-[2025-07-11 12:47:46.717357] Выбран видеоформат: id=1078218367704492v, ext=mp4, vcodec=vp09.00.40.08.00.01.01.01.00
-[2025-07-11 12:47:47.469240] Выбран аудио: id=3072845932893747a, ext=m4a, acodec=mp4a.40.5
-[2025-07-11 12:47:51.272768] Начальный/дефолтный выходной формат: mp4 (индекс 0)
-[2025-07-11 12:47:53.486323] Выбран формат по умолчанию: mp4
-[2025-07-11 12:47:53.486925] Интеграция субтитров: False, языки: [], keep files: True
-[2025-07-11 12:47:53.487592] Оригинальное название видео: 'Obvious traps - Viva La Dirt League', Безопасное название: 'Obvious traps - Viva La Dirt League'
-[2025-07-11 12:47:53.487991] Предлагаемое имя файла (по умолчанию): Obvious traps - Viva La Dirt League
-[2025-07-11 12:47:53.488432] Проверка имени файла: F:/Video\Obvious traps - Viva La Dirt League.mp4
-[2025-07-11 12:47:56.645052] Файл 'F:/Video\Obvious traps - Viva La Dirt League.mp4' не существует. Используем это имя.
-[2025-07-11 12:47:56.645827] Финальное имя файла, выбранное пользователем: 'Obvious traps - Viva La Dirt League'
-[2025-07-11 12:47:56.646382] subtitle_options переданы: None
-[2025-07-11 12:47:56.646896] yt‑dlp outtmpl: F:/Video\Obvious traps - Viva La Dirt League.%(ext)s
-[2025-07-11 12:47:56.647373] Поиск ffmpeg: Проверяем локальный путь: C:\Users\TeplyakovAV\VDL\ffmpeg.exe
-[2025-07-11 12:47:56.652274] Поиск ffmpeg: Проверяем системный PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:47:56.652889] FFmpeg найден в системном PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:47:56.653345] Выбрано два потока: 1078218367704492v+3072845932893747a
-[2025-07-11 12:47:56.653890] merge_output_format = mp4
-[2025-07-11 12:47:56.654394] cookiefile = cookies_fb.txt
-[2025-07-11 12:47:56.655721] Запуск yt‑dlp, попытка 1/15: {'format': '1078218367704492v+3072845932893747a', 'outtmpl': 'F:/Video\\Obvious traps - Viva La Dirt League.%(ext)s', 'quiet': False, 'ffmpeg_location': 'C:\\WINDOWS\\system32\\ffmpeg.EXE', 'overwrites': True, 'continuedl': True, 'writedescription': False, 'writeinfojson': False, 'writesubtitles': False, 'progress_hooks': [<function download_video.<locals>.phook at 0x0000026CCD014220>], 'merge_output_format': 'mp4', 'cookiefile': 'cookies_fb.txt'}
-[2025-07-11 12:49:36.162582] Файл скачан: F:\Video\Obvious traps - Viva La Dirt League.f1078218367704492v.mp4
-[2025-07-11 12:49:41.797989] Файл скачан: F:\Video\Obvious traps - Viva La Dirt League.f3072845932893747a.m4a
-[2025-07-11 12:49:44.275216] Поиск ffmpeg: Проверяем локальный путь: C:\Users\TeplyakovAV\VDL\ffmpeg.exe
-[2025-07-11 12:49:44.279958] Поиск ffmpeg: Проверяем системный PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:49:44.280444] FFmpeg найден в системном PATH: C:\WINDOWS\system32\ffmpeg.EXE
-[2025-07-11 12:49:44.281043] Копирование потоков для формата mp4
-[2025-07-11 12:49:44.281547] Выполняется команда ffmpeg для объединения: C:\WINDOWS\system32\ffmpeg.EXE -loglevel warning -i F:/Video\Obvious traps - Viva La Dirt League.mp4 -c:v copy -c:a copy -map 0 F:/Video\Obvious traps - Viva La Dirt League_muxed_temp.mp4
-[2025-07-11 12:49:45.553826] Файл переименован: F:/Video\Obvious traps - Viva La Dirt League_muxed_temp.mp4 → F:/Video\Obvious traps - Viva La Dirt League.mp4
-[2025-07-11 12:49:45.554874] Видео успешно сохранено в: F:/Video\Obvious traps - Viva La Dirt League.mp4
-[2025-07-11 12:49:45.555318] Завершение работы скрипта.
+--- Начинается новый сеанс отладки [2025-07-11 13:38:39.296783] ---
+[2025-07-11 13:38:39.295832] Поиск ffmpeg: Проверяем локальный путь: C:\Users\TeplyakovAV\VDL\ffmpeg.exe
+[2025-07-11 13:38:39.304732] Поиск ffmpeg: Проверяем системный PATH: C:\WINDOWS\system32\ffmpeg.EXE
+[2025-07-11 13:38:39.305584] FFmpeg найден в системном PATH: C:\WINDOWS\system32\ffmpeg.EXE
+[2025-07-11 13:38:40.890346] Введена ссылка: https://www.youtube.com/playlist?list=PL_saLI-LH-Vr-zw0pkQIBNGbpzalH-XLO
+[2025-07-11 13:38:40.891558] Определена платформа: youtube для URL: https://www.youtube.com/playlist?list=PL_saLI-LH-Vr-zw0pkQIBNGbpzalH-XLO
+[2025-07-11 13:38:41.858330] Файл куков 'cookies_yt.txt' существует и прошёл проверку. Используем его.
+[2025-07-11 13:38:41.860086] get_video_info: Используем cookiefile: cookies_yt.txt
+[2025-07-11 13:38:41.860611] get_video_info: Запрос информации для URL: https://www.youtube.com/playlist?list=PL_saLI-LH-Vr-zw0pkQIBNGbpzalH-XLO с опциями: {'quiet': True, 'skip_download': True, 'extract_flat': True, 'cookiefile': 'cookies_yt.txt'}
+[2025-07-11 13:38:45.301420] get_video_info: Получена информация о видео. Title: Honest Ads (Now on its very own Channel!), ID: PL_saLI-LH-Vr-zw0pkQIBNGbpzalH-XLO
+[2025-07-11 13:38:45.306046] Обнаружен плейлист. Количество видео: 79
+[2025-07-11 13:38:53.891292] Выбраны номера видео для скачивания: [1, 3, 7]
+[2025-07-11 13:38:54.007637] Файл куков 'cookies_yt.txt' существует и прошёл проверку. Используем его.
+[2025-07-11 13:38:54.008114] get_video_info: Используем cookiefile: cookies_yt.txt
+[2025-07-11 13:38:54.008628] get_video_info: Запрос информации для URL: https://www.youtube.com/watch?v=2ovhbT-Iulc с опциями: {'quiet': True, 'skip_download': True, 'extract_flat': True, 'cookiefile': 'cookies_yt.txt'}
+[2025-07-11 13:39:05.671867] get_video_info: Получена информация о видео. Title: If Coffee Commercials Were Honest - Honest Ads (Starbucks, Coffee Bean, Folgers Parody), ID: 2ovhbT-Iulc
+[2025-07-11 13:39:10.075520] Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.
+[2025-07-11 13:39:10.076144] Завершение работы скрипта.
