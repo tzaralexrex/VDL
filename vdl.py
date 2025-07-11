@@ -247,8 +247,6 @@ def extract_platform_and_url(raw_url: str):
     log_debug("Платформа не опознана, пробуем generic-режим.")
     return "generic", url
 
-    raise ValueError(Fore.RED + "Не удалось определить платформу (YouTube, Facebook, Vimeo, Rutube, VK)" + Style.RESET_ALL)
-
 
 def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
     """
@@ -1047,12 +1045,6 @@ def main():
 
     raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
     log_debug(f"Введена ссылка: {raw_url}")
-
-    output_path = None
-    output_name = None
-    output_format = None
-    video_id = None
-    audio_id = None
 
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
     subtitle_files = []
