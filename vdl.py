@@ -12,7 +12,6 @@ import http.cookiejar
 import ctypes
 import importlib
 import os
-import sys
 
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
@@ -119,6 +118,7 @@ try:
     from tkinter import filedialog
 except ImportError:
     tk = None
+    filedialog = None
 
 init(autoreset=True)  # инициализация colorama и автоматический сброс цвета после каждого print
 
@@ -1198,11 +1198,15 @@ def main():
                 # Кодеки
                 if desired_ext == 'webm':
                     if need_webm_transcode:
+                        # Перекодирование в совместимые кодеки для webm
                         ffmpeg_cmd += ['-c:v', 'libvpx-vp9', '-c:a', 'libopus']
+                        log_debug('Включено перекодирование в webm: libvpx-vp9 + libopus')
                     else:
                         ffmpeg_cmd += ['-c:v', 'copy', '-c:a', 'copy']
+                        log_debug('Webm: копирование потоков без перекодирования')
                 else:
                     ffmpeg_cmd += ['-c:v', 'copy', '-c:a', 'copy']
+                    log_debug(f'Копирование потоков для формата {desired_ext}')
 
                 if integrate_subs and subs_to_integrate:
                     ffmpeg_cmd += ['-c:s', 'srt']
@@ -1213,6 +1217,7 @@ def main():
                 if integrate_subs and subs_to_integrate:
                     for idx, (_, lang) in enumerate(subs_to_integrate):
                         ffmpeg_cmd += ['-map', str(idx + 1)]
+                        # Добавляем метаданные языка для субтитров
                         ffmpeg_cmd += [f'-metadata:s:s:{idx}', f'language={lang}']
 
                 if integrate_chapters and chapter_filename:
@@ -1223,58 +1228,35 @@ def main():
                 log_debug(f"Выполняется команда ffmpeg для объединения: {' '.join(map(str, ffmpeg_cmd))}")
                 result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
 
-
                 if result.returncode == 0:
                     try:
-                        os.remove(current_processing_file)
-                    except Exception as e:
-                        log_debug(f"Ошибка при удалении исходного файла после mux: {e}")
-                    current_processing_file = temp_output_file
-
-                    if integrate_chapters and chapter_filename and not keep_chapter_file:
-                        try:
-                            os.remove(chapter_filename)
-                            print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
-                            log_debug(f"Удалён временный файл глав: {chapter_filename}")
-                        except Exception as e:
-                            log_debug(f"Ошибка при удалении файла глав: {e}")
-
-                    if integrate_subs and subs_to_integrate:
-                        print(Fore.GREEN + f"Видео, аудио и субтитры объединены в {desired_ext.upper()}." + Style.RESET_ALL)
-                        log_debug(f"Видео, аудио и субтитры объединены в {desired_ext.upper()}: {temp_output_file}")
-                        if not keep_sub_files:
+                        # Удаляем временный файл глав, если не нужно сохранять
+                        if integrate_chapters and chapter_filename and not keep_chapter_file:
+                            if os.path.exists(chapter_filename):
+                                os.remove(chapter_filename)
+                                log_debug(f"Удалён файл глав: {chapter_filename}")
+                        # Удаляем субтитры, если не нужно сохранять
+                        if integrate_subs and subs_to_integrate and not keep_sub_files:
                             for sub_file, _ in subs_to_integrate:
-                                try:
+                                if os.path.exists(sub_file):
                                     os.remove(sub_file)
-                                    print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
-                                    log_debug(f"Удалён встроенный файл субтитров: {sub_file}")
-                                except Exception as e:
-                                    print(Fore.RED + f"Ошибка при удалении файла субтитров {sub_file}: {e}" + Style.RESET_ALL)
-                                    log_debug(f"Ошибка при удалении файла субтитров {sub_file}: {e}")
-                    else:
-                        print(Fore.GREEN + f"Видео и аудио объединены в {desired_ext}." + Style.RESET_ALL)
-                        log_debug(f"Видео и аудио объединены в {desired_ext}: {temp_output_file}")
+                                    log_debug(f"Удалён файл субтитров: {sub_file}")
+                    except Exception as e:
+                        print(Fore.YELLOW + f"Не удалось удалить временные файлы: {e}" + Style.RESET_ALL)
+                        log_debug(f"Ошибка удаления временных файлов: {e}\n{traceback.format_exc()}")
+                    current_processing_file = temp_output_file
                 else:
-                    print(Fore.RED + "Ошибка при объединении через ffmpeg." + Style.RESET_ALL)
-                    log_debug("Ошибка при объединении через ffmpeg.")
+                    print(Fore.RED + f"Ошибка muxing: {result.stderr}" + Style.RESET_ALL)
+                    log_debug(f"Ошибка muxing: {result.stderr}")
 
             final_target_filename = os.path.join(output_path, f"{output_name}.{output_format}")
             if os.path.abspath(current_processing_file) != os.path.abspath(final_target_filename):
                 try:
-                    if os.path.exists(final_target_filename):
-                        try:
-                            os.remove(final_target_filename)
-                            log_debug(f"Удалён существующий файл перед переименованием: {final_target_filename}")
-                        except Exception as e:
-                            log_debug(f"Не удалось удалить существующий файл перед переименованием: {e}")
-                            final_target_filename = current_processing_file  # fallback
-                            raise e  # пробрасываем исключение, чтобы не делать переименование
-                    os.rename(current_processing_file, final_target_filename)
-                    log_debug(f"Переименован файл: {current_processing_file} -> {final_target_filename}")
+                    os.replace(current_processing_file, final_target_filename)
+                    log_debug(f"Файл переименован: {current_processing_file} → {final_target_filename}")
                 except Exception as e:
-                    log_debug(f"Ошибка при переименовании финального файла: {e}")
-                    print(Fore.RED + f"Ошибка при переименовании финального файла: {e}" + Style.RESET_ALL)
-                    final_target_filename = current_processing_file  # fallback
+                    print(Fore.YELLOW + f"Не удалось переименовать файл: {e}" + Style.RESET_ALL)
+                    log_debug(f"Ошибка переименования файла: {e}\n{traceback.format_exc()}")
 
             print(Fore.GREEN + f"\nГотово. Видео сохранено в: {final_target_filename}" + Style.RESET_ALL)
             log_debug(f"Видео успешно сохранено в: {final_target_filename}")
