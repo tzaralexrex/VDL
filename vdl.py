@@ -27,6 +27,8 @@ COOKIES_GOOGLE = "cookies_google.txt"
 
 MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
 
+CHECK_VER = 1  # 1 = проверять версии зависимостей, 0 = только наличие модулей
+
 # --- Автоимпорт и автоустановка requests и packaging ---
 def ensure_base_dependencies():
     """
@@ -65,6 +67,14 @@ def import_or_update(module_name, pypi_name=None, min_version=None):
     :return: импортированный модуль
     """
     pypi_name = pypi_name or module_name
+    if not CHECK_VER:
+        # Только проверка наличия модуля
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            print(f"\n[!] Необходимый модуль {pypi_name} не установлен. Установите его вручную командой:\n    pip install {pypi_name}\nРабота невозможна.")
+            sys.exit(1)
+    # Полная проверка с версионностью
     print(f"Проверяю наличие и актуальность модуля {pypi_name}", end='', flush=True)
     try:
         module = importlib.import_module(module_name)
