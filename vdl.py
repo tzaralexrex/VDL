@@ -1286,31 +1286,41 @@ def main():
                         video_fmt_auto = find_by_format_id(entry_info['formats'], video_id, is_video=True)
                         audio_fmt_auto = find_by_format_id(entry_info['formats'], audio_id, is_video=False) if audio_id else None
                         # Если не найдено — fallback к старой логике
-                        def find_best_format(formats, ref_ext, ref_height, ref_vcodec):
-                            candidates = [f for f in formats if f.get('ext') == ref_ext and f.get('vcodec') != 'none']
-                            if ref_height:
-                                candidates = sorted(candidates, key=lambda f: abs((f.get('height') or 0) - ref_height))
+                        # --- Улучшенный fallback: bestvideo/bestaudio с совместимыми контейнерами ---
+                        def get_compatible_exts(ext):
+                            compat = {
+                                'mp4':  {'mp4', 'm4a'},
+                                'm4a':  {'mp4', 'm4a'},
+                                'webm': {'webm'},
+                                'mkv':  {'mp4', 'm4a', 'webm'},
+                                'avi':  {'avi', 'mp3', 'aac'},
+                            }
+                            return compat.get(ext, {ext})
+
+                        def find_best_video(formats, ref_ext):
+                            compatible_exts = get_compatible_exts(ref_ext)
+                            candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext') in compatible_exts]
                             if candidates:
-                                return candidates[0]
+                                return max(candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
                             candidates = [f for f in formats if f.get('vcodec') != 'none']
-                            if ref_height:
-                                candidates = sorted(candidates, key=lambda f: (f.get('ext') != ref_ext, abs((f.get('height') or 0) - ref_height)))
                             if candidates:
-                                return candidates[0]
-                            return formats[-1]  # fallback
-                        def find_best_audio(formats, ref_ext, ref_acodec):
-                            candidates = [f for f in formats if f.get('ext') == ref_ext and f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+                                return max(candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
+                            return None
+
+                        def find_best_audio(formats, ref_ext):
+                            compatible_exts = get_compatible_exts(ref_ext)
+                            candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('ext') in compatible_exts]
                             if candidates:
-                                return candidates[0]
+                                return max(candidates, key=lambda f: (f.get('abr') or 0))
                             candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
                             if candidates:
-                                return candidates[0]
+                                return max(candidates, key=lambda f: (f.get('abr') or 0))
                             return None
+
                         if not video_fmt_auto:
-                            video_fmt_auto = find_best_format(entry_info['formats'], video_ext, entry_info['formats'][0].get('height'), video_codec)
+                            video_fmt_auto = find_best_video(entry_info['formats'], video_ext)
                         if audio_id and not audio_fmt_auto:
-                            audio_fmt_auto = find_best_audio(entry_info['formats'], audio_ext, audio_codec)
-                        video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
+                            audio_fmt_auto = find_best_audio(entry_info['formats'], audio_ext)                        video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
                         audio_id_auto = audio_fmt_auto.get('format_id') if audio_fmt_auto else None
                         # ---
                         default_title = entry_info.get('title', f'video_{idx}')
