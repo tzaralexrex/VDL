@@ -28,7 +28,7 @@ COOKIES_GOOGLE = "cookies_google.txt"
 
 MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
 
-CHECK_VER = 0  # 1 = проверять версии зависимостей, 0 = только наличие модулей
+CHECK_VER = 1  # 1 = проверять версии зависимостей, 0 = только наличие модулей
 
 # --- Автоимпорт и автоустановка requests и packaging ---
 def ensure_base_dependencies():
