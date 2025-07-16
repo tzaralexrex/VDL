@@ -1043,7 +1043,12 @@ def main():
         )
         sys.exit(1)
 
-    raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
+    # --- Поддержка передачи ссылки через командную строку ---
+    if len(sys.argv) > 1:
+        raw_url = sys.argv[1]
+        print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
+    else:
+        raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
     log_debug(f"Введена ссылка: {raw_url}")
 
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
