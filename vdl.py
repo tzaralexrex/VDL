@@ -1,3 +1,5 @@
+import argparse
+import re
 # Universal Video Downloader with Cookie Browser Support
 
 from pathlib import Path
@@ -1043,13 +1045,42 @@ def main():
         )
         sys.exit(1)
 
-    # --- Поддержка передачи ссылки через командную строку ---
-    if len(sys.argv) > 1:
-        raw_url = sys.argv[1]
-        print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
-    else:
+
+    def parse_args():
+        parser = argparse.ArgumentParser(description="Universal Video Downloader", add_help=True)
+        parser.add_argument('url', nargs='?', help='Ссылка на видео или плейлист')
+        parser.add_argument('--auto', '-a', action='store_true', help='Автоматический режим (не задавать вопросов)')
+        parser.add_argument('--bestvideo', action='store_true', help='Использовать bestvideo')
+        parser.add_argument('--bestaudio', action='store_true', help='Использовать bestaudio')
+        # Для совместимости с одиночным тире и без тире
+        # Собираем все sys.argv, ищем вручную
+        args, unknown = parser.parse_known_args()
+        # Если url не найден, ищем вручную первый аргумент, похожий на ссылку
+        if not args.url:
+            for arg in sys.argv[1:]:
+                if re.match(r'^https?://', arg):
+                    args.url = arg
+                    break
+        # Поддержка ключей без тире (например, auto, bestvideo)
+        for arg in sys.argv[1:]:
+            if arg.lower() == 'auto':
+                args.auto = True
+            if arg.lower() == 'bestvideo':
+                args.bestvideo = True
+            if arg.lower() == 'bestaudio':
+                args.bestaudio = True
+        return args
+
+    args = parse_args()
+    auto_mode = args.auto
+    raw_url = args.url
+    if not raw_url:
         raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
+    else:
+        print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
     log_debug(f"Введена ссылка: {raw_url}")
+
+    # Теперь auto_mode, args.bestvideo, args.bestaudio можно использовать в логике ниже
 
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
     subtitle_files = []
