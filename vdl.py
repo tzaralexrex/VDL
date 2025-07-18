@@ -1311,6 +1311,10 @@ def main():
                                 input_files.append(f'-i "{sub_file}"')
                                 sub_files.append(sub_file)
 
+                        # Добавляем метаданные языка для каждой дорожки субтитров
+                        for sub_idx, lang in enumerate(subs_to_integrate_langs):
+                            ffmpeg_cmd += [f'-metadata:s:s:{sub_idx}', f'language={lang}']
+
                     # Добавляем главы (ffmeta) как последний вход
                     if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
                         input_files.append(f'-i "{chapter_filename}"')
@@ -1457,6 +1461,10 @@ def main():
                                     if os.path.exists(sub_file):
                                         input_files.append(f'-i "{sub_file}"')
                                         sub_files.append(sub_file)
+                                # Добавляем метаданные языка для каждой дорожки субтитров
+                                for sub_idx, lang in enumerate(subs_to_integrate_langs):
+                                    ffmpeg_cmd += [f'-metadata:s:s:{sub_idx}', f'language={lang}']
+
 
                             # Добавляем главы (ffmeta) как последний вход
                             if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
@@ -1635,6 +1643,10 @@ def main():
                                     input_files.append(f'-i "{sub_file}"')
                                     sub_files.append(sub_file)
 
+                            # Добавляем метаданные языка для каждой дорожки субтитров
+                            for sub_idx, lang in enumerate(subs_to_integrate_langs):
+                                ffmpeg_cmd += [f'-metadata:s:s:{sub_idx}', f'language={lang}']
+
                         # Добавляем главы (ffmeta) как последний вход
                         if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
                             input_files.append(f'-i "{chapter_filename}"')
@@ -1788,6 +1800,10 @@ def main():
                         if os.path.exists(sub_file):
                             input_files.append(f'-i "{sub_file}"')
                             sub_files.append(sub_file)
+
+                    # Добавляем метаданные языка для каждой дорожки субтитров
+                    for sub_idx, lang in enumerate(subs_to_integrate_langs):
+                        ffmpeg_cmd += [f'-metadata:s:s:{sub_idx}', f'language={lang}']
 
                 # Добавляем главы (ffmeta) как последний вход
                 if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
