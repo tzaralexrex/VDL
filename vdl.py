@@ -1294,7 +1294,36 @@ def main():
                     print(Fore.GREEN + f"Видео {first_idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
                 else:
                     print(Fore.RED + f"Ошибка при скачивании видео {first_idx}." + Style.RESET_ALL)
-
+                if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+                    ffmpeg_cmd = [
+                        'ffmpeg', '-y',
+                        '-i', f'"{downloaded_file}"'
+                    ]
+                    # Добавляем субтитры
+                    sub_files = []
+                    if integrate_subs and subtitle_download_options:
+                        sub_dir = output_path
+                        sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
+                        for lang in subs_to_integrate_langs:
+                            sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                            if os.path.exists(sub_file):
+                                ffmpeg_cmd += ['-i', f'"{sub_file}"']
+                                sub_files.append(sub_file)
+                    # Добавляем главы
+                    if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
+                        ffmpeg_cmd += ['-map_metadata', '1', '-i', f'"{chapter_filename}"']
+                    # Формируем map
+                    ffmpeg_cmd += ['-map', '0']
+                    for idx, _ in enumerate(sub_files, 1):
+                        ffmpeg_cmd += ['-map', str(idx)]
+                    final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                    ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
+                    print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
+                    try:
+                        subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
+                        print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                    except Exception as mux_err:
+                        print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
                 # --- Для остальных видео применяем те же параметры ---
                 for idx in selected_indexes[1:]:
                     entry = entries[idx - 1]
@@ -1387,6 +1416,36 @@ def main():
                             print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
                         else:
                             print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
+                        if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+                            ffmpeg_cmd = [
+                                'ffmpeg', '-y',
+                                '-i', f'"{downloaded_file}"'
+                            ]
+                            # Добавляем субтитры
+                            sub_files = []
+                            if integrate_subs and subtitle_download_options:
+                                sub_dir = output_path
+                                sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
+                                for lang in subs_to_integrate_langs:
+                                    sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                                    if os.path.exists(sub_file):
+                                        ffmpeg_cmd += ['-i', f'"{sub_file}"']
+                                        sub_files.append(sub_file)
+                            # Добавляем главы
+                            if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
+                                ffmpeg_cmd += ['-map_metadata', '1', '-i', f'"{chapter_filename}"']
+                            # Формируем map
+                            ffmpeg_cmd += ['-map', '0']
+                            for idx, _ in enumerate(sub_files, 1):
+                                ffmpeg_cmd += ['-map', str(idx)]
+                            final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                            ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
+                            print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
+                            try:
+                                subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
+                                print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                            except Exception as mux_err:
+                                print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
                     except KeyboardInterrupt:
                         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
                         log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
@@ -1508,6 +1567,36 @@ def main():
                         print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
                     else:
                         print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
+                    if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+                        ffmpeg_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', f'"{downloaded_file}"'
+                        ]
+                        # Добавляем субтитры
+                        sub_files = []
+                        if integrate_subs and subtitle_download_options:
+                            sub_dir = output_path
+                            sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
+                            for lang in subs_to_integrate_langs:
+                                sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                                if os.path.exists(sub_file):
+                                    ffmpeg_cmd += ['-i', f'"{sub_file}"']
+                                    sub_files.append(sub_file)
+                        # Добавляем главы
+                        if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
+                            ffmpeg_cmd += ['-map_metadata', '1', '-i', f'"{chapter_filename}"']
+                        # Формируем map
+                        ffmpeg_cmd += ['-map', '0']
+                        for idx, _ in enumerate(sub_files, 1):
+                            ffmpeg_cmd += ['-map', str(idx)]
+                        final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                        ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
+                        print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
+                        try:
+                            subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
+                            print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                        except Exception as mux_err:
+                            print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
                 except KeyboardInterrupt:
                     print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
                     log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
@@ -1605,6 +1694,36 @@ def main():
                 print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
             else:
                 print(Fore.RED + "\nОшибка при скачивании видео." + Style.RESET_ALL)
+            if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+                ffmpeg_cmd = [
+                    'ffmpeg', '-y',
+                    '-i', f'"{downloaded_file}"'
+                ]
+                # Добавляем субтитры
+                sub_files = []
+                if integrate_subs and subtitle_download_options:
+                    sub_dir = output_path
+                    sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
+                    for lang in subs_to_integrate_langs:
+                        sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                        if os.path.exists(sub_file):
+                            ffmpeg_cmd += ['-i', f'"{sub_file}"']
+                            sub_files.append(sub_file)
+                # Добавляем главы
+                if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
+                    ffmpeg_cmd += ['-map_metadata', '1', '-i', f'"{chapter_filename}"']
+                # Формируем map
+                ffmpeg_cmd += ['-map', '0']
+                for idx, _ in enumerate(sub_files, 1):
+                    ffmpeg_cmd += ['-map', str(idx)]
+                final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
+                print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
+                try:
+                    subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
+                    print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                except Exception as mux_err:
+                    print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
         log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
