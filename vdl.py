@@ -1296,7 +1296,7 @@ def main():
                     print(Fore.RED + f"Ошибка при скачивании видео {first_idx}." + Style.RESET_ALL)
                 if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
                     # --- Формируем команду ffmpeg для muxing с правильным порядком опций ---
-                    ffmpeg_cmd = ['ffmpeg', '-y']
+                    ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
                     # Список всех входных файлов: сначала видео, затем субтитры, затем главы (ffmeta)
                     input_files = [f'-i "{downloaded_file}"']
                     sub_files = []  # Для хранения путей к субтитрам
@@ -1447,7 +1447,7 @@ def main():
                             print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
                         if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
                             # --- Формируем команду ffmpeg для muxing с правильным порядком опций ---
-                            ffmpeg_cmd = ['ffmpeg', '-y']
+                            ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
                             # Список всех входных файлов: сначала видео, затем субтитры, затем главы (ffmeta)
                             input_files = [f'-i "{downloaded_file}"']
                             sub_files = []  # Для хранения путей к субтитрам
@@ -1628,7 +1628,7 @@ def main():
 
                     if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
                         # --- Формируем команду ffmpeg для muxing с правильным порядком опций ---
-                        ffmpeg_cmd = ['ffmpeg', '-y']
+                        ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
                         # Список всех входных файлов: сначала видео, затем субтитры, затем главы (ffmeta)
                         input_files = [f'-i "{downloaded_file}"']
                         sub_files = []  # Для хранения путей к субтитрам
@@ -1786,7 +1786,7 @@ def main():
 
             if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
                 # --- Формируем команду ffmpeg для muxing с правильным порядком опций ---
-                ffmpeg_cmd = ['ffmpeg', '-y']
+                ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
                 # Список всех входных файлов: сначала видео, затем субтитры, затем главы (ffmeta)
                 input_files = [f'-i "{downloaded_file}"']
                 sub_files = []  # Для хранения путей к субтитрам
