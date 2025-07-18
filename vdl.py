@@ -1,5 +1,3 @@
-import argparse
-import re
 # Universal Video Downloader with Cookie Browser Support
 
 from pathlib import Path
@@ -15,6 +13,7 @@ import ctypes
 import importlib
 import os
 import platform
+import argparse
 
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
@@ -161,7 +160,7 @@ def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
 
 def detect_ffmpeg_path():
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    local_path = os.path.join(script_dir, "ffmpeg.exe")
+    local_path = os.path.normpath(os.path.join(script_dir, "ffmpeg.exe"))
     log_debug(f"Поиск ffmpeg: Проверяем локальный путь: {local_path}")
     if os.path.isfile(local_path):
         log_debug(f"FFmpeg найден по локальному пути: {local_path}")
@@ -737,7 +736,7 @@ def ask_output_filename(default_name, output_path, output_format):
     current_name = default_name
     log_debug(f"Предлагаемое имя файла (по умолчанию): {default_name}")
     while True:
-        proposed_full_path = os.path.join(output_path, current_name + '.' + output_format)
+        proposed_full_path = os.path.normpath(os.path.join(output_path, current_name + '.' + output_format))
         log_debug(f"Проверка имени файла: {proposed_full_path}")
         
         print(f"\n{Fore.MAGENTA}Предлагаемое имя файла: {Fore.GREEN}{current_name}.{output_format}{Style.RESET_ALL}")
@@ -768,7 +767,7 @@ def ask_output_filename(default_name, output_path, output_format):
                     idx = 1
                     while True:
                         indexed_name = f"{current_name}_{idx}"
-                        indexed_full_path = os.path.join(output_path, indexed_name + '.' + output_format)
+                        indexed_full_path = os.path.normpath(os.path.join(output_path, indexed_name + '.' + output_format))
                         log_debug(f"Выбрано: добавить индекс. Проверка индексированного имени: {indexed_full_path}")
                         if not os.path.exists(indexed_full_path):
                             print(Fore.GREEN + f"Файл будет сохранен как '{indexed_name}.{output_format}'." + Style.RESET_ALL)
@@ -780,7 +779,7 @@ def ask_output_filename(default_name, output_path, output_format):
                 return current_name # Файл не существует, можно использовать это имя
         else: # Пользователь ввел новое имя
             new_name = name_input
-            new_full_path = os.path.join(output_path, new_name + '.' + output_format)
+            new_full_path = os.path.normpath(os.path.join(output_path, new_name + '.' + output_format))
             log_debug(f"Пользователь ввел новое имя: '{new_name}'. Проверка: {new_full_path}")
             if os.path.exists(new_full_path):
                 print(Fore.YELLOW + f"Файл '{new_full_path}' уже существует." + Style.RESET_ALL)
@@ -799,7 +798,7 @@ def ask_output_filename(default_name, output_path, output_format):
                     idx = 1
                     while True:
                         indexed_name = f"{new_name}_{idx}"
-                        indexed_full_path = os.path.join(output_path, indexed_name + '.' + output_format)
+                        indexed_full_path = os.path.normpath(os.path.join(output_path, indexed_name + '.' + output_format))
                         log_debug(f"Выбрано: добавить индекс. Проверка индексированного имени: {indexed_full_path}")
                         if not os.path.exists(indexed_full_path):
                             print(Fore.GREEN + f"Файл будет сохранен как '{indexed_name}.{output_format}'." + Style.RESET_ALL)
@@ -849,7 +848,7 @@ def download_video(
     Скачивает (и, при необходимости, сливает) выбранные потоки.
     Возвращает путь к итоговому файлу либо None.
     """
-    full_tmpl = os.path.join(output_path, output_name + '.%(ext)s')
+    full_tmpl = os.path.normpath(os.path.join(output_path, output_name + '.%(ext)s'))
     log_debug(f"yt‑dlp outtmpl: {full_tmpl}")
 
     ffmpeg_path = detect_ffmpeg_path()
@@ -925,7 +924,7 @@ def download_video(
             base_low = output_name.lower()
             for fn in os.listdir(output_path):
                 if fn.lower().startswith(base_low) and fn.lower().endswith('.' + merge_format):
-                    return os.path.join(output_path, fn)
+                    return os.path.normpath(os.path.join(output_path, fn))
 
             return None
 
@@ -942,7 +941,7 @@ def download_video(
                 log_debug("Попытка устранить блокировку .part-файла.")
                 try:
                     part_file = None
-                    base_path = os.path.join(output_path, output_name)
+                    base_path = os.path.normpath(os.path.join(output_path, output_name))
                     for ext_try in ("m4a", "webm", "mp4", "mkv"):
                         part_candidate = (
                             base_path + f".f{audio_id}.{ext_try}.part" if audio_id
@@ -1279,12 +1278,12 @@ def main():
                         keep_chapter_file = keep == "1"
                         log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
                 default_title = entry_info.get('title', f'video_{first_idx}')
-                safe_title = re.sub(r'[<>:"/\\|?*]', '', default_title)
+                safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                 log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                 output_name = ask_output_filename(safe_title, output_path, output_format)
                 log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
                 if (save_chapter_file or integrate_chapters) and has_chapters:
-                    chapter_filename = os.path.join(output_path, f"{output_name}.chapters.txt")
+                    chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
                     save_chapters_to_file(chapters, chapter_filename)
                 log_debug(f"subtitle_options переданы: {subtitle_download_options}")
                 downloaded_file = download_video(
@@ -1361,23 +1360,23 @@ def main():
                         audio_id_auto = audio_fmt_auto.get('format_id') if audio_fmt_auto else None
                         # ---
                         default_title = entry_info.get('title', f'video_{idx}')
-                        safe_title = re.sub(r'[<>:"/\\|?*]', '', default_title)
+                        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                         log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                         # --- Автоматический подбор имени файла, если файл уже существует ---
                         def get_unique_filename(base_name, output_path, output_format):
                             candidate = f"{base_name}.{output_format}"
-                            if not os.path.exists(os.path.join(output_path, candidate)):
+                            if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
                                 return base_name
                             idx = 2
                             while True:
                                 candidate = f"{base_name}_{idx}.{output_format}"
-                                if not os.path.exists(os.path.join(output_path, candidate)):
+                                if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
                                     return f"{base_name}_{idx}"
                                 idx += 1
                         output_name = get_unique_filename(safe_title, output_path, output_format)
                         log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
                         if (save_chapter_file or integrate_chapters) and has_chapters:
-                            chapter_filename = os.path.join(output_path, f"{output_name}.chapters.txt")
+                            chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
                             save_chapters_to_file(chapters, chapter_filename)
                         log_debug(f"subtitle_options переданы: {subtitle_download_options}")
                         downloaded_file = download_video(
@@ -1482,23 +1481,23 @@ def main():
                             keep_chapter_file = keep == "1"
                             log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
                     default_title = entry_info.get('title', f'video_{idx}')
-                    safe_title = re.sub(r'[<>:"/\\|?*]', '', default_title)
+                    safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                     log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                     # --- Автоматический подбор имени файла, если файл уже существует ---
                     def get_unique_filename(base_name, output_path, output_format):
                         candidate = f"{base_name}.{output_format}"
-                        if not os.path.exists(os.path.join(output_path, candidate)):
+                        if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
                             return base_name
                         idx = 2
                         while True:
                             candidate = f"{base_name}_{idx}.{output_format}"
-                            if not os.path.exists(os.path.join(output_path, candidate)):
+                            if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
                                 return f"{base_name}_{idx}"
                             idx += 1
                     output_name = get_unique_filename(safe_title, output_path, output_format)
                     log_debug(f"Финальное имя файла (автоматически): '{output_name}'")
                     if (save_chapter_file or integrate_chapters) and has_chapters:
-                        chapter_filename = os.path.join(output_path, f"{output_name}.chapters.txt")
+                        chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
                         save_chapters_to_file(chapters, chapter_filename)
                     log_debug(f"subtitle_options переданы: {subtitle_download_options}")
                     downloaded_file = download_video(
@@ -1592,7 +1591,7 @@ def main():
             output_name = ask_output_filename(safe_title, output_path, output_format)
             log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
             if (save_chapter_file or integrate_chapters) and has_chapters:
-                chapter_filename = os.path.join(output_path, output_name + ".ffmeta")
+                chapter_filename = os.path.normpath(os.path.join(output_path, output_name + ".ffmeta"))
                 save_chapters_to_file(chapters, chapter_filename)
             # Запуск загрузки видео
             downloaded_file = download_video(
