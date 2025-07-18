@@ -1337,6 +1337,16 @@ def main():
                     try:
                         subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
                         print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                        # После успешного muxing'а:
+                        try:
+                            # Удаляем исходный файл, если он существует
+                            if os.path.exists(downloaded_file):
+                                os.remove(downloaded_file)
+                            # Переименовываем _muxed-файл в исходное имя
+                            os.rename(final_mkv, downloaded_file)
+                            print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+                        except Exception as file_err:
+                            print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                     except Exception as mux_err:
                         print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
                 # --- Для остальных видео применяем те же параметры ---
@@ -1474,6 +1484,16 @@ def main():
                             try:
                                 subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
                                 print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                                # После успешного muxing'а:
+                                try:
+                                    # Удаляем исходный файл, если он существует
+                                    if os.path.exists(downloaded_file):
+                                        os.remove(downloaded_file)
+                                    # Переименовываем _muxed-файл в исходное имя
+                                    os.rename(final_mkv, downloaded_file)
+                                    print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+                                except Exception as file_err:
+                                    print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                             except Exception as mux_err:
                                 print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
                     except KeyboardInterrupt:
@@ -1641,6 +1661,16 @@ def main():
                         try:
                             subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
                             print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                            # После успешного muxing'а:
+                            try:
+                                # Удаляем исходный файл, если он существует
+                                if os.path.exists(downloaded_file):
+                                    os.remove(downloaded_file)
+                                # Переименовываем _muxed-файл в исходное имя
+                                os.rename(final_mkv, downloaded_file)
+                                print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+                            except Exception as file_err:
+                                print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                         except Exception as mux_err:
                             print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
 
@@ -1785,6 +1815,16 @@ def main():
                 try:
                     subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
                     print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
+                    # После успешного muxing'а:
+                    try:
+                        # Удаляем исходный файл, если он существует
+                        if os.path.exists(downloaded_file):
+                            os.remove(downloaded_file)
+                        # Переименовываем _muxed-файл в исходное имя
+                        os.rename(final_mkv, downloaded_file)
+                        print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+                    except Exception as file_err:
+                        print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                 except Exception as mux_err:
                     print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
 
