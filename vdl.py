@@ -278,7 +278,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
             if cookie_file_is_valid(platform, cookie_file):
                 print(Fore.CYAN + f"Пытаемся использовать куки из файла {cookie_file} для {platform.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Файл куков '{cookie_file}' существует и прошёл проверку. Используем его.")
-                return cookie_file
+                return os.path.normpath(cookie_file)
             else:
                 print(f"[!] Файл {cookie_file} найден, но авторизация не удалась. Пробуем свежие куки из браузера…")
                 log_debug(f"Файл {cookie_file} найден, но не прошёл проверку. Переходим к извлечению из браузера.")
@@ -321,7 +321,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
                 print(Fore.GREEN + f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}.")
                 if save_cookies_to_netscape_file(extracted_cj, cookie_file):
-                    return cookie_file
+                    return os.path.normpath(cookie_file)
                 else:
                     print(Fore.RED + "Не удалось сохранить извлеченные куки в файл. Продолжаем без них." + Style.RESET_ALL)
                     log_debug("Не удалось сохранить извлеченные куки в файл.")
@@ -712,7 +712,7 @@ def select_output_folder():
             # Возвращаем фокус обратно к окну
             user32.SetForegroundWindow(foreground_window)
             if folder:
-                return folder
+                return os.path.normpath(folder)
             else:
                 print(Fore.YELLOW + "Папка не выбрана. Попробуйте снова." + Style.RESET_ALL)
         except Exception as e:
@@ -727,7 +727,7 @@ def select_output_folder():
         if not os.path.isdir(folder):
             print(Fore.RED + f"Папка '{folder}' не существует. Попробуйте снова." + Style.RESET_ALL)
             continue
-        return folder
+        return os.path.normpath(folder)
 
 def ask_output_filename(default_name, output_path, output_format):
     """
@@ -1009,6 +1009,7 @@ def download_video(
 
 def save_chapters_to_file(chapters, path):
     try:
+        path = os.path.normpath(path)
         with open(path, "w", encoding="utf-8") as f:
             f.write(";FFMETADATA1\n")
             for i, ch in enumerate(chapters, 1):
@@ -1250,8 +1251,8 @@ def main():
                         print(f"{sidx}: {lang}")
                     sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
                     if sel in ("", "0", "all"):
-                        subs_to_integrate_langs = available_langs.copy()
                         integrate_subs = True
+                        subs_to_integrate_langs = available_langs.copy()
                     elif sel == "-":
                         integrate_subs = False
                     else:
@@ -1306,7 +1307,7 @@ def main():
                         sub_dir = output_path
                         sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
                         for lang in subs_to_integrate_langs:
-                            sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                            sub_file = os.path.normpath(os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}"))
                             if os.path.exists(sub_file):
                                 input_files.append(f'-i "{sub_file}"')
                                 sub_files.append(sub_file)
@@ -1335,7 +1336,7 @@ def main():
                         ffmpeg_cmd += ['-map', str(idx)]
 
                     # Имя итогового файла
-                    final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                    final_mkv = os.path.normpath(os.path.join(output_path, f"{output_name}_muxed.mkv"))
                     ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
 
                     print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
@@ -1350,6 +1351,26 @@ def main():
                             # Переименовываем _muxed-файл в исходное имя
                             os.rename(final_mkv, downloaded_file)
                             print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+
+                            # Удаляем временные файлы субтитров, если пользователь не выбрал их сохранять
+                            if integrate_subs and not keep_sub_files:
+                                for lang in subs_to_integrate_langs:
+                                    sub_file = os.path.normpath(os.path.join(output_path, f"{output_name}.{lang}.{subtitle_download_options.get('subtitlesformat', 'srt')}"))
+                                    if os.path.exists(sub_file):
+                                        try:
+                                            os.remove(sub_file)
+                                            print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
+                                        except Exception as e:
+                                            print(Fore.RED + f"Не удалось удалить файл субтитров: {sub_file}: {e}" + Style.RESET_ALL)
+
+                            # Удаляем файл глав, если пользователь не выбрал его сохранять
+                            if integrate_chapters and not keep_chapter_file and chapter_filename and os.path.exists(chapter_filename):
+                                try:
+                                    os.remove(chapter_filename)
+                                    print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
+                                except Exception as e:
+                                    print(Fore.RED + f"Не удалось удалить файл глав: {chapter_filename}: {e}" + Style.RESET_ALL)
+
                         except Exception as file_err:
                             print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                     except Exception as mux_err:
@@ -1458,7 +1479,7 @@ def main():
                                 sub_dir = output_path
                                 sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
                                 for lang in subs_to_integrate_langs:
-                                    sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                                    sub_file = os.path.normpath(os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}"))
                                     if os.path.exists(sub_file):
                                         input_files.append(f'-i "{sub_file}"')
                                         sub_files.append(sub_file)
@@ -1487,7 +1508,7 @@ def main():
                                 ffmpeg_cmd += ['-map', str(idx)]
 
                             # Имя итогового файла
-                            final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                            final_mkv = os.path.normpath(os.path.join(output_path, f"{output_name}_muxed.mkv"))
                             ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
 
                             print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
@@ -1502,6 +1523,26 @@ def main():
                                     # Переименовываем _muxed-файл в исходное имя
                                     os.rename(final_mkv, downloaded_file)
                                     print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+
+                                    # Удаляем временные файлы субтитров, если пользователь не выбрал их сохранять
+                                    if integrate_subs and not keep_sub_files:
+                                        for lang in subs_to_integrate_langs:
+                                            sub_file = os.path.normpath(os.path.join(output_path, f"{output_name}.{lang}.{subtitle_download_options.get('subtitlesformat', 'srt')}"))
+                                            if os.path.exists(sub_file):
+                                                try:
+                                                    os.remove(sub_file)
+                                                    print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
+                                                except Exception as e:
+                                                    print(Fore.RED + f"Не удалось удалить файл субтитров: {sub_file}: {e}" + Style.RESET_ALL)
+
+                                    # Удаляем файл глав, если пользователь не выбрал его сохранять
+                                    if integrate_chapters and not keep_chapter_file and chapter_filename and os.path.exists(chapter_filename):
+                                        try:
+                                            os.remove(chapter_filename)
+                                            print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
+                                        except Exception as e:
+                                            print(Fore.RED + f"Не удалось удалить файл глав: {chapter_filename}: {e}" + Style.RESET_ALL)
+
                                 except Exception as file_err:
                                     print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                             except Exception as mux_err:
@@ -1640,7 +1681,7 @@ def main():
                             sub_dir = output_path
                             sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
                             for lang in subs_to_integrate_langs:
-                                sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                                sub_file = os.path.normpath(os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}"))
                                 if os.path.exists(sub_file):
                                     input_files.append(f'-i "{sub_file}"')
                                     sub_files.append(sub_file)
@@ -1669,7 +1710,7 @@ def main():
                             ffmpeg_cmd += ['-map', str(idx)]
 
                         # Имя итогового файла
-                        final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                        final_mkv = os.path.normpath(os.path.join(output_path, f"{output_name}_muxed.mkv"))
                         ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
 
                         print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
@@ -1684,6 +1725,26 @@ def main():
                                 # Переименовываем _muxed-файл в исходное имя
                                 os.rename(final_mkv, downloaded_file)
                                 print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+
+                                # Удаляем временные файлы субтитров, если пользователь не выбрал их сохранять
+                                if integrate_subs and not keep_sub_files:
+                                    for lang in subs_to_integrate_langs:
+                                        sub_file = os.path.normpath(os.path.join(output_path, f"{output_name}.{lang}.{subtitle_download_options.get('subtitlesformat', 'srt')}"))
+                                        if os.path.exists(sub_file):
+                                            try:
+                                                os.remove(sub_file)
+                                                print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
+                                            except Exception as e:
+                                                print(Fore.RED + f"Не удалось удалить файл субтитров: {sub_file}: {e}" + Style.RESET_ALL)
+
+                                # Удаляем файл глав, если пользователь не выбрал его сохранять
+                                if integrate_chapters and not keep_chapter_file and chapter_filename and os.path.exists(chapter_filename):
+                                    try:
+                                        os.remove(chapter_filename)
+                                        print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
+                                    except Exception as e:
+                                        print(Fore.RED + f"Не удалось удалить файл глав: {chapter_filename}: {e}" + Style.RESET_ALL)
+
                             except Exception as file_err:
                                 print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                         except Exception as mux_err:
@@ -1799,7 +1860,7 @@ def main():
                     sub_dir = output_path
                     sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
                     for lang in subs_to_integrate_langs:
-                        sub_file = os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}")
+                        sub_file = os.path.normpath(os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}"))
                         if os.path.exists(sub_file):
                             input_files.append(f'-i "{sub_file}"')
                             sub_files.append(sub_file)
@@ -1828,7 +1889,7 @@ def main():
                     ffmpeg_cmd += ['-map', str(idx)]
 
                 # Имя итогового файла
-                final_mkv = os.path.join(output_path, f"{output_name}_muxed.mkv")
+                final_mkv = os.path.normpath(os.path.join(output_path, f"{output_name}_muxed.mkv"))
                 ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
 
                 print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
@@ -1843,6 +1904,26 @@ def main():
                         # Переименовываем _muxed-файл в исходное имя
                         os.rename(final_mkv, downloaded_file)
                         print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
+
+                        # Удаляем временные файлы субтитров, если пользователь не выбрал их сохранять
+                        if integrate_subs and not keep_sub_files:
+                            for lang in subs_to_integrate_langs:
+                                sub_file = os.path.normpath(os.path.join(output_path, f"{output_name}.{lang}.{subtitle_download_options.get('subtitlesformat', 'srt')}"))
+                                if os.path.exists(sub_file):
+                                    try:
+                                        os.remove(sub_file)
+                                        print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
+                                    except Exception as e:
+                                        print(Fore.RED + f"Не удалось удалить файл субтитров: {sub_file}: {e}" + Style.RESET_ALL)
+
+                        # Удаляем файл глав, если пользователь не выбрал его сохранять
+                        if integrate_chapters and not keep_chapter_file and chapter_filename and os.path.exists(chapter_filename):
+                            try:
+                                os.remove(chapter_filename)
+                                print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
+                            except Exception as e:
+                                print(Fore.RED + f"Не удалось удалить файл глав: {chapter_filename}: {e}" + Style.RESET_ALL)
+
                     except Exception as file_err:
                         print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
                 except Exception as mux_err:
