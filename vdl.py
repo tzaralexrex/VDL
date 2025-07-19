@@ -1028,6 +1028,157 @@ def save_chapters_to_file(chapters, path):
         log_debug(f"Ошибка сохранения файла глав (ffmetadata): {e}")
         return False
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Universal Video Downloader", add_help=True)
+    parser.add_argument('url', nargs='?', help='Ссылка на видео или плейлист')
+    parser.add_argument('--auto', '-a', action='store_true', help='Автоматический режим (не задавать вопросов)')
+    parser.add_argument('--bestvideo', action='store_true', help='Использовать bestvideo')
+    parser.add_argument('--bestaudio', action='store_true', help='Использовать bestaudio')
+    # Для совместимости с одиночным тире и без тире
+    # Собираем все sys.argv, ищем вручную
+    args, unknown = parser.parse_known_args()
+    # Если url не найден, ищем вручную первый аргумент, похожий на ссылку
+    if not args.url:
+        for arg in sys.argv[1:]:
+            if re.match(r'^https?://', arg):
+                args.url = arg
+                break
+    # Поддержка ключей без тире (например, auto, bestvideo)
+    for arg in sys.argv[1:]:
+        if arg.lower() == 'auto':
+            args.auto = True
+        if arg.lower() == 'bestvideo':
+            args.bestvideo = True
+        if arg.lower() == 'bestaudio':
+            args.bestaudio = True
+    return args
+
+def parse_selection(selection, total):
+    """
+    Расширенный парсер выбора номеров видео:
+    - Поддержка диапазонов (1-5, 3-)
+    - Открытый конец (7-), в середине списка трактуется как диапазон до следующего числа
+    - Проверка на ошибки диапазонов и номеров
+    - Вывод предупреждений при ошибках
+    """
+    result = set()
+    errors = []
+    if not selection or selection.strip() == '0':
+        return set(range(1, total + 1))
+    parts = [p.strip() for p in re.split(r'[ ,;]+', selection) if p.strip()]
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if '-' in part:
+            # Диапазон N-M
+            if re.fullmatch(r'\d+-\d+', part):
+                start, end = map(int, part.split('-', 1))
+                if start > end:
+                    errors.append(f"Диапазон '{part}': начало больше конца")
+                elif not (1 <= start <= total) or not (1 <= end <= total):
+                    errors.append(f"Диапазон '{part}' вне диапазона 1-{total}")
+                else:
+                    result.update(range(start, end + 1))
+                i += 1
+                continue
+            # Открытый диапазон N-
+            elif re.fullmatch(r'\d+-', part):
+                start = int(part[:-1])
+                # Если это не последний элемент и следующий — число, трактуем как диапазон N-M
+                if i + 1 < len(parts) and parts[i + 1].isdigit():
+                    end = int(parts[i + 1])
+                    if start > end:
+                        errors.append(f"Диапазон '{start}-{end}': начало больше конца")
+                    elif not (1 <= start <= total) or not (1 <= end <= total):
+                        errors.append(f"Диапазон '{start}-{end}' вне диапазона 1-{total}")
+                    else:
+                        result.update(range(start, end + 1))
+                    i += 2
+                    continue
+                else:
+                    # Открытый диапазон до конца
+                    if 1 <= start <= total:
+                        result.update(range(start, total + 1))
+                    else:
+                        errors.append(f"Открытый диапазон '{part}' вне диапазона 1-{total}")
+                    i += 1
+                    continue
+            else:
+                errors.append(f"Некорректный диапазон: '{part}'")
+                i += 1
+                continue
+        else:
+            # Одиночное число
+            if part.isdigit():
+                num = int(part)
+                if 1 <= num <= total:
+                    result.add(num)
+                else:
+                    errors.append(f"Номер '{num}' вне диапазона 1-{total}")
+            else:
+                errors.append(f"Некорректный номер: '{part}'")
+            i += 1
+    if errors:
+        print(Fore.YELLOW + "Внимание! Обнаружены ошибки в выборе номеров:")
+        for err in errors:
+            print("  - " + err)
+        print(Style.RESET_ALL)
+    return sorted(result)
+
+# --- Новый приоритет: сначала ищем по format_id, затем fallback ---
+def find_by_format_id(formats, fmt_id, is_video=True):
+    for f in formats:
+        if f.get('format_id') == fmt_id:
+            if is_video and f.get('vcodec') != 'none':
+                return f
+            if not is_video and f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                return f
+    return None
+
+# Если не найдено — fallback к старой логике
+# --- Улучшенный fallback: bestvideo/bestaudio с совместимыми контейнерами ---
+def get_compatible_exts(ext):
+    compat = {
+        'mp4':  {'mp4', 'm4a'},
+        'm4a':  {'mp4', 'm4a'},
+        'webm': {'webm'},
+        'mkv':  {'mp4', 'm4a', 'webm'},
+        'avi':  {'avi', 'mp3', 'aac'},
+    }
+    return compat.get(ext, {ext})
+
+def find_best_video(formats, ref_ext):
+    compatible_exts = get_compatible_exts(ref_ext)
+    candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext') in compatible_exts]
+    if candidates:
+        return max(candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
+    candidates = [f for f in formats if f.get('vcodec') != 'none']
+    if candidates:
+        return max(candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
+    return None
+
+def find_best_audio(formats, ref_ext):
+    compatible_exts = get_compatible_exts(ref_ext)
+    candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('ext') in compatible_exts]
+    if candidates:
+        return max(candidates, key=lambda f: (f.get('abr') or 0))
+    candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+    if candidates:
+        return max(candidates, key=lambda f: (f.get('abr') or 0))
+    return None
+
+# --- Автоматический подбор имени файла, если файл уже существует ---
+def get_unique_filename(base_name, output_path, output_format):
+    candidate = f"{base_name}.{output_format}"
+    if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
+        return base_name
+    idx = 2
+    while True:
+        candidate = f"{base_name}_{idx}.{output_format}"
+        if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
+            return f"{base_name}_{idx}"
+        idx += 1
+
 def main():
     print(Fore.YELLOW + "Universal Video Downloader")
 
@@ -1044,32 +1195,6 @@ def main():
             "или поместите ffmpeg в системный путь PATH.\n"
         )
         sys.exit(1)
-
-
-    def parse_args():
-        parser = argparse.ArgumentParser(description="Universal Video Downloader", add_help=True)
-        parser.add_argument('url', nargs='?', help='Ссылка на видео или плейлист')
-        parser.add_argument('--auto', '-a', action='store_true', help='Автоматический режим (не задавать вопросов)')
-        parser.add_argument('--bestvideo', action='store_true', help='Использовать bestvideo')
-        parser.add_argument('--bestaudio', action='store_true', help='Использовать bestaudio')
-        # Для совместимости с одиночным тире и без тире
-        # Собираем все sys.argv, ищем вручную
-        args, unknown = parser.parse_known_args()
-        # Если url не найден, ищем вручную первый аргумент, похожий на ссылку
-        if not args.url:
-            for arg in sys.argv[1:]:
-                if re.match(r'^https?://', arg):
-                    args.url = arg
-                    break
-        # Поддержка ключей без тире (например, auto, bestvideo)
-        for arg in sys.argv[1:]:
-            if arg.lower() == 'auto':
-                args.auto = True
-            if arg.lower() == 'bestvideo':
-                args.bestvideo = True
-            if arg.lower() == 'bestaudio':
-                args.bestaudio = True
-        return args
 
     args = parse_args()
     auto_mode = args.auto
@@ -1111,78 +1236,6 @@ def main():
             for idx, entry in enumerate(entries, 1):
                 title = entry.get('title') or entry.get('id') or f'Видео {idx}'
                 print(f"{idx}. {title}")
-
-            def parse_selection(selection, total):
-                """
-                Расширенный парсер выбора номеров видео:
-                - Поддержка диапазонов (1-5, 3-)
-                - Открытый конец (7-), в середине списка трактуется как диапазон до следующего числа
-                - Проверка на ошибки диапазонов и номеров
-                - Вывод предупреждений при ошибках
-                """
-                result = set()
-                errors = []
-                if not selection or selection.strip() == '0':
-                    return set(range(1, total + 1))
-                parts = [p.strip() for p in re.split(r'[ ,;]+', selection) if p.strip()]
-                i = 0
-                while i < len(parts):
-                    part = parts[i]
-                    if '-' in part:
-                        # Диапазон N-M
-                        if re.fullmatch(r'\d+-\d+', part):
-                            start, end = map(int, part.split('-', 1))
-                            if start > end:
-                                errors.append(f"Диапазон '{part}': начало больше конца")
-                            elif not (1 <= start <= total) or not (1 <= end <= total):
-                                errors.append(f"Диапазон '{part}' вне диапазона 1-{total}")
-                            else:
-                                result.update(range(start, end + 1))
-                            i += 1
-                            continue
-                        # Открытый диапазон N-
-                        elif re.fullmatch(r'\d+-', part):
-                            start = int(part[:-1])
-                            # Если это не последний элемент и следующий — число, трактуем как диапазон N-M
-                            if i + 1 < len(parts) and parts[i + 1].isdigit():
-                                end = int(parts[i + 1])
-                                if start > end:
-                                    errors.append(f"Диапазон '{start}-{end}': начало больше конца")
-                                elif not (1 <= start <= total) or not (1 <= end <= total):
-                                    errors.append(f"Диапазон '{start}-{end}' вне диапазона 1-{total}")
-                                else:
-                                    result.update(range(start, end + 1))
-                                i += 2
-                                continue
-                            else:
-                                # Открытый диапазон до конца
-                                if 1 <= start <= total:
-                                    result.update(range(start, total + 1))
-                                else:
-                                    errors.append(f"Открытый диапазон '{part}' вне диапазона 1-{total}")
-                                i += 1
-                                continue
-                        else:
-                            errors.append(f"Некорректный диапазон: '{part}'")
-                            i += 1
-                            continue
-                    else:
-                        # Одиночное число
-                        if part.isdigit():
-                            num = int(part)
-                            if 1 <= num <= total:
-                                result.add(num)
-                            else:
-                                errors.append(f"Номер '{num}' вне диапазона 1-{total}")
-                        else:
-                            errors.append(f"Некорректный номер: '{part}'")
-                        i += 1
-                if errors:
-                    print(Fore.YELLOW + "Внимание! Обнаружены ошибки в выборе номеров:")
-                    for err in errors:
-                        print("  - " + err)
-                    print(Style.RESET_ALL)
-                return sorted(result)
 
             print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
             sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
@@ -1389,48 +1442,8 @@ def main():
                         cookie_file_to_use = entry_info.get('__cookiefile__')
                         chapters = entry_info.get("chapters")
                         has_chapters = isinstance(chapters, list) and len(chapters) > 0
-                        # --- Новый приоритет: сначала ищем по format_id, затем fallback ---
-                        def find_by_format_id(formats, fmt_id, is_video=True):
-                            for f in formats:
-                                if f.get('format_id') == fmt_id:
-                                    if is_video and f.get('vcodec') != 'none':
-                                        return f
-                                    if not is_video and f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                                        return f
-                            return None
                         video_fmt_auto = find_by_format_id(entry_info['formats'], video_id, is_video=True)
                         audio_fmt_auto = find_by_format_id(entry_info['formats'], audio_id, is_video=False) if audio_id else None
-                        # Если не найдено — fallback к старой логике
-                        # --- Улучшенный fallback: bestvideo/bestaudio с совместимыми контейнерами ---
-                        def get_compatible_exts(ext):
-                            compat = {
-                                'mp4':  {'mp4', 'm4a'},
-                                'm4a':  {'mp4', 'm4a'},
-                                'webm': {'webm'},
-                                'mkv':  {'mp4', 'm4a', 'webm'},
-                                'avi':  {'avi', 'mp3', 'aac'},
-                            }
-                            return compat.get(ext, {ext})
-
-                        def find_best_video(formats, ref_ext):
-                            compatible_exts = get_compatible_exts(ref_ext)
-                            candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext') in compatible_exts]
-                            if candidates:
-                                return max(candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
-                            candidates = [f for f in formats if f.get('vcodec') != 'none']
-                            if candidates:
-                                return max(candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
-                            return None
-
-                        def find_best_audio(formats, ref_ext):
-                            compatible_exts = get_compatible_exts(ref_ext)
-                            candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('ext') in compatible_exts]
-                            if candidates:
-                                return max(candidates, key=lambda f: (f.get('abr') or 0))
-                            candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-                            if candidates:
-                                return max(candidates, key=lambda f: (f.get('abr') or 0))
-                            return None
 
                         if not video_fmt_auto:
                             video_fmt_auto = find_best_video(entry_info['formats'], video_ext)
@@ -1442,17 +1455,6 @@ def main():
                         default_title = entry_info.get('title', f'video_{idx}')
                         safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                         log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                        # --- Автоматический подбор имени файла, если файл уже существует ---
-                        def get_unique_filename(base_name, output_path, output_format):
-                            candidate = f"{base_name}.{output_format}"
-                            if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
-                                return base_name
-                            idx = 2
-                            while True:
-                                candidate = f"{base_name}_{idx}.{output_format}"
-                                if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
-                                    return f"{base_name}_{idx}"
-                                idx += 1
                         output_name = get_unique_filename(safe_title, output_path, output_format)
                         log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
                         if (save_chapter_file or integrate_chapters) and has_chapters:
