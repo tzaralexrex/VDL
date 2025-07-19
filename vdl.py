@@ -389,7 +389,7 @@ def safe_get_video_info(url: str, platform: str):
 
     else:
         # ----- generic -----
-        # порядок попыток: Google‑куки → VK‑куки → пользовательский cookies.txt → без куков
+        # порядок попыток: Google-куки → VK-куки → пользовательский cookies.txt → без куков
         fallback_cookies = [
             COOKIES_GOOGLE,      # cookies_google.txt
             COOKIES_VK,          # cookies_vk.txt
@@ -416,7 +416,7 @@ def safe_get_video_info(url: str, platform: str):
                                  ("login", "403", "private", "sign in", "unauthorized"))
                 if not need_login:
                     raise          # ошибка не про авторизацию → пробрасываем
-                continue           # иначе переходим к след. cookie‑файлу
+                continue           # иначе переходим к след. cookie-файлу
     
         # --- все попытки провалились ---
         from urllib.parse import urlparse
@@ -849,7 +849,7 @@ def download_video(
     Возвращает путь к итоговому файлу либо None.
     """
     full_tmpl = os.path.normpath(os.path.join(output_path, output_name + '.%(ext)s'))
-    log_debug(f"yt‑dlp outtmpl: {full_tmpl}")
+    log_debug(f"yt-dlp outtmpl: {full_tmpl}")
 
     ffmpeg_path = detect_ffmpeg_path()
     if not ffmpeg_path:
@@ -869,7 +869,7 @@ def download_video(
         format_string = video_id
         log_debug(f"Выбран один поток: {format_string}")
 
-    # ---------------- 2. Базовые опции yt‑dlp --------------------------
+    # ---------------- 2. Базовые опции yt-dlp --------------------------
     ydl_opts = {
         'format'           : format_string,
         'outtmpl'          : full_tmpl,
@@ -883,9 +883,9 @@ def download_video(
         'progress_hooks'   : [],      # заполним ниже
     }
 
-    if manifest_mode:                 # DASH/HLS – склейку доверяем yt‑dlp
+    if manifest_mode:                 # DASH/HLS – склейку доверяем yt-dlp
         ydl_opts['postprocessors'] = [{'key': 'FFmpegMerger'}]
-        log_debug("Обнаружен поток‑манифест – задействуем FFmpegMerger.")
+        log_debug("Обнаружен поток-манифест – задействуем FFmpegMerger.")
     else:
         ydl_opts['merge_output_format'] = merge_format
         log_debug(f"merge_output_format = {merge_format}")
@@ -897,7 +897,7 @@ def download_video(
     if subtitle_options:
         ydl_opts.update(subtitle_options)
 
-    # ---------------- 3. progress‑hook & подготовка --------------------
+    # ---------------- 3. progress-hook & подготовка --------------------
     os.makedirs(output_path, exist_ok=True)
     last_file = None
 
@@ -912,7 +912,7 @@ def download_video(
     # ---------------- 4. Загрузка с повторами --------------------------
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            log_debug(f"Запуск yt‑dlp, попытка {attempt}/{MAX_RETRIES}: {ydl_opts}")
+            log_debug(f"Запуск yt-dlp, попытка {attempt}/{MAX_RETRIES}: {ydl_opts}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
@@ -1188,7 +1188,7 @@ def mux_mkv_with_subs_and_chapters(
     """
     Объединяет видео, субтитры и главы в итоговый MKV-файл.
     Удаляет временные файлы при необходимости.
-    Защита от path-injection: output_name не должен содержать ../, \, /, :, *, ?, ", <, >, | и др.
+    Защита от path-injection: output_name не должен содержать запрещенные символы.
     Все создаваемые файлы должны быть внутри output_path.
     """
 
@@ -1450,89 +1450,6 @@ def main():
                         integrate_subs, keep_sub_files,
                         integrate_chapters, keep_chapter_file, chapter_filename
                     )
-
-"""
-                if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                    # --- Формируем команду ffmpeg для muxing с правильным порядком опций ---
-                    ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
-                    # Список всех входных файлов: сначала видео, затем субтитры, затем главы (ffmeta)
-                    input_files = [f'-i "{downloaded_file}"']
-                    sub_files = []  # Для хранения путей к субтитрам
-
-                    # Добавляем субтитры как отдельные входы
-                    if integrate_subs and subtitle_download_options:
-                        sub_dir = output_path
-                        sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
-                        for lang in subs_to_integrate_langs:
-                            sub_file = os.path.normpath(os.path.join(sub_dir, f"{output_name}.{lang}.{sub_fmt}"))
-                            if os.path.exists(sub_file):
-                                input_files.append(f'-i "{sub_file}"')
-                                sub_files.append(sub_file)
-
-                    # Добавляем главы (ffmeta) как последний вход
-                    if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
-                        input_files.append(f'-i "{chapter_filename}"')
-
-                    # Добавляем все входные файлы к команде
-                    ffmpeg_cmd += input_files
-
-                    # Теперь добавляем метаданные языка для каждой дорожки субтитров
-                    if integrate_subs and subtitle_download_options:
-                        for sub_idx, lang in enumerate(subs_to_integrate_langs):
-                            ffmpeg_cmd += [f'-metadata:s:s:{sub_idx}', f'language={lang}']
-
-                    # -map_metadata N (N = индекс ffmeta-файла среди входов), только если есть главы
-                    if integrate_chapters and chapter_filename and os.path.exists(chapter_filename):
-                        ffmpeg_cmd += ['-map_metadata', str(len(input_files)-1)]
-
-                    # Основная дорожка (видео/аудио)
-                    ffmpeg_cmd += ['-map', '0']
-
-                    # Каждая дорожка субтитров (индексы: 1, 2, ...)
-                    for idx, _ in enumerate(sub_files, 1):
-                        ffmpeg_cmd += ['-map', str(idx)]
-
-                    # Имя итогового файла
-                    final_mkv = os.path.normpath(os.path.join(output_path, f"{output_name}_muxed.mkv"))
-                    ffmpeg_cmd += ['-c', 'copy', f'"{final_mkv}"']
-
-                    print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
-                    try:
-                        subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
-                        print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
-                        # После успешного muxing'а:
-                        try:
-                            # Удаляем исходный файл, если он существует
-                            if os.path.exists(downloaded_file):
-                                os.remove(downloaded_file)
-                            # Переименовываем _muxed-файл в исходное имя
-                            os.rename(final_mkv, downloaded_file)
-                            print(Fore.GREEN + f"Файл сохранён как: {downloaded_file}" + Style.RESET_ALL)
-
-                            # Удаляем временные файлы субтитров, если пользователь не выбрал их сохранять
-                            if integrate_subs and not keep_sub_files:
-                                for lang in subs_to_integrate_langs:
-                                    sub_file = os.path.normpath(os.path.join(output_path, f"{output_name}.{lang}.{subtitle_download_options.get('subtitlesformat', 'srt')}"))
-                                    if os.path.exists(sub_file):
-                                        try:
-                                            os.remove(sub_file)
-                                            print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
-                                        except Exception as e:
-                                            print(Fore.RED + f"Не удалось удалить файл субтитров: {sub_file}: {e}" + Style.RESET_ALL)
-
-                            # Удаляем файл глав, если пользователь не выбрал его сохранять
-                            if integrate_chapters and not keep_chapter_file and chapter_filename and os.path.exists(chapter_filename):
-                                try:
-                                    os.remove(chapter_filename)
-                                    print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
-                                except Exception as e:
-                                    print(Fore.RED + f"Не удалось удалить файл глав: {chapter_filename}: {e}" + Style.RESET_ALL)
-
-                        except Exception as file_err:
-                            print(Fore.RED + f"Ошибка при замене итогового файла: {file_err}" + Style.RESET_ALL)
-                    except Exception as mux_err:
-                        print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
-"""                        
                 # --- Для остальных видео применяем те же параметры ---
                 for idx in selected_indexes[1:]:
                     entry = entries[idx - 1]
