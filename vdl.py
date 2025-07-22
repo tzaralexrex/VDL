@@ -1425,6 +1425,7 @@ def main():
     audio_ext = ''
     video_codec = ''
     audio_codec = ''
+    saved_list_path = None
 
     try:
         platform, url = extract_platform_and_url(raw_url)
