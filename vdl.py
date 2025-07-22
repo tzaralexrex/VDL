@@ -15,6 +15,7 @@ import threading
 import shutil
 from pathlib import Path
 from datetime import datetime
+from shutil import which
 
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
