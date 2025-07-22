@@ -1550,7 +1550,7 @@ def main():
                 default_title = entry_info.get('title', f'video_{first_idx}')
                 safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                 if add_index_prefix:
-                    safe_title = f"{first_idx:02d} - {safe_title}"
+                    safe_title = f"{first_idx:02d} {safe_title}"
                 log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                 output_name = ask_output_filename(safe_title, output_path, output_format)
                 log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
@@ -1602,7 +1602,7 @@ def main():
                         default_title = entry_info.get('title', f'video_{idx}')
                         safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                         if add_index_prefix:
-                            safe_title = f"{idx:02d} - {safe_title}"
+                            safe_title = f"{idx:02d} {safe_title}"
                         log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                         output_name = get_unique_filename(safe_title, output_path, output_format)
                         log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
@@ -1730,7 +1730,7 @@ def main():
                     default_title = entry_info.get('title', f'video_{idx}')
                     safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                     if add_index_prefix:
-                        safe_title = f"{idx:02d} - {safe_title}"
+                        safe_title = f"{idx:02d} {safe_title}"
                     log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                     # --- Автоматический подбор имени файла, если файл уже существует ---
                     output_name = get_unique_filename(safe_title, output_path, output_format)
