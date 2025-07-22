@@ -1438,6 +1438,13 @@ def main():
             playlist_title = info.get('title') or "playlist"
             saved_list_path = print_playlist_paginated(entries, page_size=20, timeout=10, playlist_title=playlist_title)
 
+            # --- Новый блок: спрашиваем про добавление индекса к имени файла ---
+            add_index_prefix = True
+            answer = input(Fore.CYAN + "\nДобавлять номер видео в начале имени файла? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            if answer == "0":
+                add_index_prefix = False
+            log_debug(f"add_index_prefix = {add_index_prefix}")
+
             print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
             sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
             selected_indexes = parse_selection(sel, len(entries))
@@ -1541,6 +1548,8 @@ def main():
                         log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
                 default_title = entry_info.get('title', f'video_{first_idx}')
                 safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                if add_index_prefix:
+                    safe_title = f"{first_idx:02d} - {safe_title}"
                 log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                 output_name = ask_output_filename(safe_title, output_path, output_format)
                 log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
@@ -1591,6 +1600,8 @@ def main():
                         # ---
                         default_title = entry_info.get('title', f'video_{idx}')
                         safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                        if add_index_prefix:
+                            safe_title = f"{idx:02d} - {safe_title}"
                         log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                         output_name = get_unique_filename(safe_title, output_path, output_format)
                         log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
@@ -1717,6 +1728,8 @@ def main():
                             log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
                     default_title = entry_info.get('title', f'video_{idx}')
                     safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                    if add_index_prefix:
+                        safe_title = f"{idx:02d} - {safe_title}"
                     log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                     # --- Автоматический подбор имени файла, если файл уже существует ---
                     output_name = get_unique_filename(safe_title, output_path, output_format)
