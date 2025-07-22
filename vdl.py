@@ -340,13 +340,14 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
     log_debug(f"Автоматическое получение куков для {platform.capitalize()} не удалось.")
     return None
 
-
-
-def get_video_info(url, platform, cookie_file_path=None):
+def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None):
     ydl_opts = {'quiet': True, 'skip_download': True, 'extract_flat': True}
     if cookie_file_path:
         ydl_opts['cookiefile'] = cookie_file_path
         log_debug(f"get_video_info: Используем cookiefile: {cookie_file_path}")
+    if cookiesfrombrowser:
+        ydl_opts['cookiesfrombrowser'] = cookiesfrombrowser
+        log_debug(f"get_video_info: Пробуем cookiesfrombrowser: {cookiesfrombrowser}")
 
     log_debug(f"get_video_info: Запрос информации для URL: {url} с опциями: {ydl_opts}")
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -383,6 +384,14 @@ def safe_get_video_info(url: str, platform: str):
                 elif attempt == "browser":
                     current_cookie = None
                 else:
+                    # --- ДОБАВЛЕНО: попытка через cookiesfrombrowser ---
+                    for browser in ("chrome", "firefox"):
+                        try:
+                            log_debug(f"safe_get_video_info: Пробуем cookiesfrombrowser: {browser}")
+                            return get_video_info(url, platform, cookiesfrombrowser=browser)
+                        except DownloadError as err2:
+                            log_debug(f"safe_get_video_info: cookiesfrombrowser {browser} не сработал: {err2}")
+                            continue
                     print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
                           f"Сохраните их вручную и положите файл сюда: {cookie_path}\n")
                     sys.exit(1)
@@ -417,7 +426,14 @@ def safe_get_video_info(url: str, platform: str):
                 if not need_login:
                     raise          # ошибка не про авторизацию → пробрасываем
                 continue           # иначе переходим к след. cookie-файлу
-    
+        # (аналогично добавить попытку cookiesfrombrowser)
+        for browser in ("chrome", "firefox"):
+            try:
+                log_debug(f"safe_get_video_info: generic: Пробуем cookiesfrombrowser: {browser}")
+                return get_video_info(url, platform, cookiesfrombrowser=browser)
+            except DownloadError as err2:
+                log_debug(f"safe_get_video_info: generic: cookiesfrombrowser {browser} не сработал: {err2}")
+                continue
         # --- все попытки провалились ---
         from urllib.parse import urlparse
         site_domain = urlparse(url).hostname or "неизвестный-домен"
