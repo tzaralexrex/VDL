@@ -838,6 +838,11 @@ def ask_output_format(default_format):
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
+def phook(d, last_file_ref):
+    if d['status'] == 'finished':
+        last_file_ref[0] = d.get('filename')
+        log_debug(f"Файл скачан: {last_file_ref[0]}")
+
 def download_video(
         url, video_id, audio_id,
         output_path, output_name,
@@ -899,16 +904,9 @@ def download_video(
 
     # ---------------- 3. progress-hook & подготовка --------------------
     os.makedirs(output_path, exist_ok=True)
-    last_file = None
-
-    def phook(d):
-        nonlocal last_file
-        if d['status'] == 'finished':
-            last_file = d.get('filename')
-            log_debug(f"Файл скачан: {last_file}")
-
-    ydl_opts['progress_hooks'] = [phook]
-
+    last_file = [None]
+    ydl_opts['progress_hooks'] = [lambda d: phook(d, last_file)]
+ 
     # ---------------- 4. Загрузка с повторами --------------------------
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -917,7 +915,7 @@ def download_video(
                 ydl.download([url])
 
             # ---- поиск итогового файла ----
-            candidate = last_file or full_tmpl.replace('%(ext)s', merge_format)
+            candidate = last_file[0] or full_tmpl.replace('%(ext)s', merge_format)
             if os.path.isfile(candidate):
                 return candidate
 
