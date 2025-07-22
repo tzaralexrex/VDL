@@ -194,6 +194,37 @@ def log_debug(message):
         with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
             f.write(log_line)
 
+def clean_url_by_platform(platform: str, url: str) -> str:
+    try:
+        if platform == 'facebook':
+            fb_patterns = [
+                r'/videos/(\d+)',
+                r'v=(\d+)',
+                r'/reel/(\d+)',
+                r'/watch/\?v=(\d+)',
+                r'/video.php\?v=(\d+)'
+            ]
+            for pattern in fb_patterns:
+                match = re.search(pattern, url)
+                if match:
+                    video_id = match.group(1)
+                    return f"https://m.facebook.com/watch/?v={video_id}&_rdr"
+            raise ValueError(Fore.RED + "Не удалось распознать ID видео Facebook" + Style.RESET_ALL)
+
+        elif platform == 'vk':
+            match = re.search(r'(video[-\d]+_\d+)', url)
+            return f"https://vk.com/{match.group(1)}" if match else url
+
+        elif platform == 'vimeo':
+            return url.split('#')[0]
+
+        elif platform == 'rutube':
+            return url.split('?')[0]
+
+    except Exception as e:
+        log_debug(f"Ошибка при очистке URL для {platform}: {e}")
+    return url
+
 def extract_platform_and_url(raw_url: str):
     url = raw_url.strip()
 
@@ -204,37 +235,6 @@ def extract_platform_and_url(raw_url: str):
         'rutube':   [r'(?:rutube\.ru)'],
         'vk':       [r'(?:vk\.com|vkontakte\.ru)'],
     }
-
-    def clean_url_by_platform(platform: str, url: str) -> str:
-        try:
-            if platform == 'facebook':
-                fb_patterns = [
-                    r'/videos/(\d+)',
-                    r'v=(\d+)',
-                    r'/reel/(\d+)',
-                    r'/watch/\?v=(\d+)',
-                    r'/video.php\?v=(\d+)'
-                ]
-                for pattern in fb_patterns:
-                    match = re.search(pattern, url)
-                    if match:
-                        video_id = match.group(1)
-                        return f"https://m.facebook.com/watch/?v={video_id}&_rdr"
-                raise ValueError(Fore.RED + "Не удалось распознать ID видео Facebook" + Style.RESET_ALL)
-
-            elif platform == 'vk':
-                match = re.search(r'(video[-\d]+_\d+)', url)
-                return f"https://vk.com/{match.group(1)}" if match else url
-
-            elif platform == 'vimeo':
-                return url.split('#')[0]
-
-            elif platform == 'rutube':
-                return url.split('?')[0]
-
-        except Exception as e:
-            log_debug(f"Ошибка при очистке URL для {platform}: {e}")
-        return url
 
     # перебираем в фиксированном порядке (обычная проверка «известных» платформ)
     for platform, pats in patterns.items():
@@ -838,6 +838,12 @@ def ask_output_format(default_format):
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
+def phook(d):
+    nonlocal last_file
+    if d['status'] == 'finished':
+        last_file = d.get('filename')
+        log_debug(f"Файл скачан: {last_file}")
+
 def download_video(
         url, video_id, audio_id,
         output_path, output_name,
@@ -900,12 +906,6 @@ def download_video(
     # ---------------- 3. progress-hook & подготовка --------------------
     os.makedirs(output_path, exist_ok=True)
     last_file = None
-
-    def phook(d):
-        nonlocal last_file
-        if d['status'] == 'finished':
-            last_file = d.get('filename')
-            log_debug(f"Файл скачан: {last_file}")
 
     ydl_opts['progress_hooks'] = [phook]
 
@@ -1179,6 +1179,13 @@ def get_unique_filename(base_name, output_path, output_format):
             return f"{base_name}_{idx}"
         idx += 1
 
+def safe_join(base, *paths):
+    # Собирает путь и проверяет, что он внутри base
+    joined = os.path.abspath(os.path.join(base, *paths))
+    if os.path.commonpath([joined, base]) != base:
+        raise ValueError(f"Попытка path-injection: {joined} вне {base}")
+    return joined
+
 def mux_mkv_with_subs_and_chapters(
     downloaded_file, output_name, output_path,
     subs_to_integrate_langs, subtitle_download_options,
@@ -1203,13 +1210,6 @@ def mux_mkv_with_subs_and_chapters(
     output_path_abs = os.path.abspath(output_path)
     if not os.path.isdir(output_path_abs):
         raise ValueError("Папка для сохранения не существует или недоступна")
-
-    def safe_join(base, *paths):
-        # Собирает путь и проверяет, что он внутри base
-        joined = os.path.abspath(os.path.join(base, *paths))
-        if os.path.commonpath([joined, base]) != base:
-            raise ValueError(f"Попытка path-injection: {joined} вне {base}")
-        return joined
 
     ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
     input_files = [f'-i "{safe_join(output_path_abs, downloaded_file)}"']
@@ -1597,16 +1597,6 @@ def main():
                     safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                     log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                     # --- Автоматический подбор имени файла, если файл уже существует ---
-                    def get_unique_filename(base_name, output_path, output_format):
-                        candidate = f"{base_name}.{output_format}"
-                        if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
-                            return base_name
-                        idx = 2
-                        while True:
-                            candidate = f"{base_name}_{idx}.{output_format}"
-                            if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
-                                return f"{base_name}_{idx}"
-                            idx += 1
                     output_name = get_unique_filename(safe_title, output_path, output_format)
                     log_debug(f"Финальное имя файла (автоматически): '{output_name}'")
                     if (save_chapter_file or integrate_chapters) and has_chapters:
