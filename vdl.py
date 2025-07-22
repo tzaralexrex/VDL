@@ -1,8 +1,5 @@
 # Universal Video Downloader with Cookie Browser Support
 
-from pathlib import Path
-from datetime import datetime
-from shutil import which
 import subprocess
 import sys
 import re
@@ -14,6 +11,10 @@ import importlib
 import os
 import platform
 import argparse
+import threading
+import shutil
+from pathlib import Path
+from datetime import datetime
 
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
@@ -1287,6 +1288,99 @@ def mux_mkv_with_subs_and_chapters(
     except Exception as mux_err:
         print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
 
+def print_playlist_paginated(entries, page_size=20, timeout=10, playlist_title=None):
+    """
+    Выводит список видео плейлиста порциями по page_size.
+    После каждой порции ждёт Enter или timeout секунд.
+    Если нажата Space — таймер останавливается, ждём только Enter.
+    После полного вывода спрашивает, сохранить ли список в файл.
+    Возвращает путь к сохранённому файлу списка (или None).
+    """
+    total = len(entries)
+    all_lines = []
+    saved_list_path = None
+    for start in range(0, total, page_size):
+        end = min(start + page_size, total)
+        for idx in range(start, end):
+            entry = entries[idx]
+            title = entry.get('title') or entry.get('id') or f'Видео {idx+1}'
+            line = f"{idx+1}. {title}"
+            print(line)
+            all_lines.append(line)
+        if end < total:
+            print(Fore.CYAN + f"\nПоказано {end} из {total}. Enter — далее, Space — пауза, или ожидание {timeout} сек..." + Style.RESET_ALL)
+            wait_only_enter = [False]
+            enter_pressed = [False]
+
+            def wait_keys():
+                try:
+                    import msvcrt
+                    import sys
+                    start_time = time.time()
+                    last_sec = -1
+                    while True:
+                        elapsed = time.time() - start_time
+                        left = int(timeout - elapsed)
+                        if not wait_only_enter[0] and left != last_sec and left >= 0:
+                            print(f"\rОжидание... {left} сек. ", end='', flush=True)
+                            last_sec = left
+                        if msvcrt.kbhit():
+                            ch = msvcrt.getwch()
+                            if ch == '\r' or ch == '\n':
+                                print()
+                                enter_pressed[0] = True
+                                return
+                            elif ch == ' ':
+                                wait_only_enter[0] = True
+                                print(Fore.CYAN + "\nПауза: нажмите Enter для продолжения..." + Style.RESET_ALL)
+                                while True:
+                                    if msvcrt.kbhit():
+                                        ch2 = msvcrt.getwch()
+                                        if ch2 == '\r' or ch2 == '\n':
+                                            print()
+                                            enter_pressed[0] = True
+                                            return
+                                    time.sleep(0.05)
+                        if not wait_only_enter[0] and elapsed >= timeout:
+                            print()
+                            return
+                        time.sleep(0.05)
+                except ImportError:
+                    # Fallback для других ОС: просто input с таймаутом
+                    try:
+                        input_thread = threading.Thread(target=input)
+                        input_thread.daemon = True
+                        input_thread.start()
+                        for left in range(timeout, 0, -1):
+                            print(f"\rОжидание... {left} сек. ", end='', flush=True)
+                            input_thread.join(1)
+                            if not input_thread.is_alive():
+                                print()
+                                enter_pressed[0] = True
+                                return
+                        print()
+                        return
+                    except Exception:
+                        return
+
+            wait_keys()
+    # --- После полного вывода ---
+    if playlist_title:
+        default_filename = f"{playlist_title}.txt"
+    else:
+        default_filename = "playlist.txt"
+    answer = input(Fore.CYAN + f"\nСохранить список видео в файл '{default_filename}'? (1 — да, Enter — нет): " + Style.RESET_ALL).strip()
+    if answer == "1":
+        try:
+            with open(default_filename, "w", encoding="utf-8") as f:
+                for line in all_lines:
+                    f.write(line + "\n")
+            print(Fore.GREEN + f"Список сохранён в файл: {default_filename}" + Style.RESET_ALL)
+            saved_list_path = os.path.abspath(default_filename)
+        except Exception as e:
+            print(Fore.RED + f"Ошибка при сохранении файла: {e}" + Style.RESET_ALL)
+    return saved_list_path
+
 def main():
     print(Fore.YELLOW + "Universal Video Downloader")
 
@@ -1341,9 +1435,8 @@ def main():
             entries = info.get('entries', [])
             print(Fore.YELLOW + f"\nОбнаружен плейлист! Количество видео: {len(entries)}" + Style.RESET_ALL)
             log_debug(f"Обнаружен плейлист. Количество видео: {len(entries)}")
-            for idx, entry in enumerate(entries, 1):
-                title = entry.get('title') or entry.get('id') or f'Видео {idx}'
-                print(f"{idx}. {title}")
+            playlist_title = info.get('title') or "playlist"
+            saved_list_path = print_playlist_paginated(entries, page_size=20, timeout=10, playlist_title=playlist_title)
 
             print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
             sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
@@ -1398,6 +1491,13 @@ def main():
                     save_chapter_file = ask_chaps != "0"
                     log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
                 output_path = select_output_folder()
+                if saved_list_path and os.path.isfile(saved_list_path):
+                    try:
+                        dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
+                        shutil.move(saved_list_path, dest_path)
+                        print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
+                    except Exception as e:
+                        print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
                 output_format = ask_output_format(desired_ext)
                 integrate_subs = False
                 keep_sub_files = True
@@ -1567,6 +1667,13 @@ def main():
                         save_chapter_file = ask_chaps != "0"
                         log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
                     output_path = select_output_folder()
+                    if saved_list_path and os.path.isfile(saved_list_path):
+                        try:
+                            dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
+                            shutil.move(saved_list_path, dest_path)
+                            print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
+                        except Exception as e:
+                            print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
                     output_format = ask_output_format(desired_ext)
                     integrate_subs = False
                     keep_sub_files = True
@@ -1679,6 +1786,13 @@ def main():
                 save_chapter_file = ask_chaps != "0"
                 log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
             output_path = select_output_folder()
+            if saved_list_path and os.path.isfile(saved_list_path):
+                try:
+                    dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
+                    shutil.move(saved_list_path, dest_path)
+                    print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
+                except Exception as e:
+                    print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
             output_format = ask_output_format(desired_ext)
             integrate_subs = False
             keep_sub_files = True
