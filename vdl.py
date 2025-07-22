@@ -1472,6 +1472,7 @@ def main():
                         if audio_id and not audio_fmt_auto:
                             audio_fmt_auto = find_best_audio(entry_info['formats'], audio_ext)
                             video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
+                        video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
                         audio_id_auto = audio_fmt_auto.get('format_id') if audio_fmt_auto else None
                         # ---
                         default_title = entry_info.get('title', f'video_{idx}')
