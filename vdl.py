@@ -838,12 +838,6 @@ def ask_output_format(default_format):
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
-def phook(d):
-    nonlocal last_file
-    if d['status'] == 'finished':
-        last_file = d.get('filename')
-        log_debug(f"Файл скачан: {last_file}")
-
 def download_video(
         url, video_id, audio_id,
         output_path, output_name,
@@ -906,6 +900,12 @@ def download_video(
     # ---------------- 3. progress-hook & подготовка --------------------
     os.makedirs(output_path, exist_ok=True)
     last_file = None
+
+    def phook(d):
+        nonlocal last_file
+        if d['status'] == 'finished':
+            last_file = d.get('filename')
+            log_debug(f"Файл скачан: {last_file}")
 
     ydl_opts['progress_hooks'] = [phook]
 
