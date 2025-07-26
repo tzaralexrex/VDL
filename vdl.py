@@ -952,6 +952,39 @@ def download_video(
 
             log_debug(f"DownloadError: {err_text} (retriable={retriable})")
 
+        # --- Новый блок: обработка ошибки HTTP 416 ---
+        if "HTTP Error 416" in err_text or "Requested range not satisfiable" in err_text:
+            # Попробуем найти .part-файл и сравнить его размер с ожидаемым
+            part_file = None
+            final_file = None
+            base_path = os.path.normpath(os.path.join(output_path, output_name))
+            for ext_try in ("mp4", "mkv", "webm", "avi"):
+                candidate_part = base_path + f".{ext_try}.part"
+                candidate_final = base_path + f".{ext_try}"
+                if os.path.exists(candidate_part):
+                    part_file = candidate_part
+                    final_file = candidate_final
+                    break
+            if part_file and final_file:
+                part_size = os.path.getsize(part_file)
+                # Получаем ожидаемый размер файла через yt-dlp info
+                try:
+                    info = get_video_info(url, platform, cookie_file_path)
+                    formats = info.get("formats", [])
+                    expected_size = None
+                    for f in formats:
+                        if f.get("ext") == ext_try and f.get("filesize"):
+                            expected_size = f["filesize"]
+                            break
+                    if expected_size and part_size >= expected_size:
+                        os.rename(part_file, final_file)
+                        print(Fore.YELLOW + f"\nФайл {part_file} был скачан полностью, переименован в {final_file}." + Style.RESET_ALL)
+                        log_debug(f"Автоматически переименован {part_file} → {final_file} (размер совпал).")
+                        return final_file
+                except Exception as info_err:
+                    log_debug(f"Ошибка при попытке получить размер видео: {info_err}")
+            # Если не удалось обработать — пробрасываем ошибку дальше
+
             # Доп. проверка на блокировку .part-файла
             if "being used by another process" in err_text or "access is denied" in err_text.lower():
                 log_debug("Попытка устранить блокировку .part-файла.")
