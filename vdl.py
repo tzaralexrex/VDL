@@ -960,16 +960,38 @@ def download_video(
                 part_file = None
                 final_file = None
                 base_path = os.path.normpath(os.path.join(output_path, output_name))
-                for ext_try in ("mp4", "mkv", "webm", "avi"):
+                found_parts = []
+                # Возможные расширения
+                for ext_try in ("mp4", "mkv", "webm", "avi", "m4a", "mp3"):
+                    # Стандартный вариант
                     candidate_part = base_path + f".{ext_try}.part"
                     candidate_final = base_path + f".{ext_try}"
                     if os.path.exists(candidate_part):
                         part_file = candidate_part
                         final_file = candidate_final
+                        found_parts.append(candidate_part)
                         break
+                    # Вариант с суффиксом .f{video_id}
+                    candidate_part2 = base_path + f".f{video_id}.{ext_try}.part"
+                    candidate_final2 = base_path + f".f{video_id}.{ext_try}"
+                    if os.path.exists(candidate_part2):
+                        part_file = candidate_part2
+                        final_file = candidate_final2
+                        found_parts.append(candidate_part2)
+                        break
+                    # Вариант с суффиксом .f{audio_id}
+                    if audio_id:
+                        candidate_part3 = base_path + f".f{audio_id}.{ext_try}.part"
+                        candidate_final3 = base_path + f".f{audio_id}.{ext_try}"
+                        if os.path.exists(candidate_part3):
+                            part_file = candidate_part3
+                            final_file = candidate_final3
+                            found_parts.append(candidate_part3)
+                            break
+                log_debug(f"Проверены .part-файлы: {found_parts}")
                 if part_file and final_file:
                     part_size = os.path.getsize(part_file)
-                    # Получаем ожидаемый размер файла через yt-dlp info
+                    log_debug(f"Найден .part-файл: {part_file}, размер: {part_size}")
                     try:
                         info = get_video_info(url, platform, cookie_file_path)
                         formats = info.get("formats", [])
@@ -978,13 +1000,51 @@ def download_video(
                             if f.get("ext") == ext_try and f.get("filesize"):
                                 expected_size = f["filesize"]
                                 break
-                        if expected_size and part_size >= expected_size:
+                        log_debug(f"Ожидаемый размер: {expected_size}")
+
+                        # --- Проверяем аудиофайл, если скачивается отдельно ---
+                        audio_part_file = None
+                        audio_final_file = None
+                        audio_expected_size = None
+                        audio_ok = True
+                        if audio_id:
+                            for ext_try_a in ("m4a", "mp3", "webm", "aac"):
+                                candidate_audio_part = base_path + f".f{audio_id}.{ext_try_a}.part"
+                                candidate_audio_final = base_path + f".f{audio_id}.{ext_try_a}"
+                                if os.path.exists(candidate_audio_part):
+                                    audio_part_file = candidate_audio_part
+                                    audio_final_file = candidate_audio_final
+                                    for f in formats:
+                                        if f.get("format_id") == str(audio_id) and f.get("ext") == ext_try_a and f.get("filesize"):
+                                            audio_expected_size = f["filesize"]
+                                            break
+                                    break
+                            if audio_part_file:
+                                audio_part_size = os.path.getsize(audio_part_file)
+                                audio_ok = (audio_expected_size and audio_part_size >= audio_expected_size) or (not audio_expected_size and audio_part_size > 5 * 1024 * 1024)
+
+                        # --- Переименовываем видео и аудио, если оба скачаны ---
+                        video_ok = (expected_size and part_size >= expected_size) or (not expected_size and part_size > 10 * 1024 * 1024)
+                        if video_ok and audio_ok:
                             os.rename(part_file, final_file)
+                            log_debug(f"Переименован видеофайл: {part_file} → {final_file}")
                             print(Fore.YELLOW + f"\nФайл {part_file} был скачан полностью, переименован в {final_file}." + Style.RESET_ALL)
-                            log_debug(f"Автоматически переименован {part_file} → {final_file} (размер совпал).")
-                            return final_file
+                            if audio_id and audio_part_file:
+                                os.rename(audio_part_file, audio_final_file)
+                                log_debug(f"Переименован аудиофайл: {audio_part_file} → {audio_final_file}")
+                                print(Fore.YELLOW + f"\nАудиофайл {audio_part_file} был скачан полностью, переименован в {audio_final_file}." + Style.RESET_ALL)
+                            # После переименования НЕ возвращаем, а продолжаем выполнение!
+                        elif video_ok and not audio_ok and audio_id:
+                            print(Fore.YELLOW + f"\nВидео скачано, но аудиофайл ещё не завершён. Ожидание аудио..." + Style.RESET_ALL)
+                            log_debug("Видео скачано, аудио не завершено. Продолжаем попытки.")
+                        elif not video_ok:
+                            print(Fore.YELLOW + f"\nВидео ещё не завершено. Ожидание..." + Style.RESET_ALL)
+                            log_debug("Видео не завершено. Продолжаем попытки.")
+                        # Не возвращаем, чтобы цикл попыток продолжался!
                     except Exception as info_err:
-                        log_debug(f"Ошибка при попытке получить размер видео: {info_err}")
+                        log_debug(f"Ошибка при попытке получить размер видео/аудио: {info_err}")
+                else:
+                    log_debug("HTTP 416: .part-файл не найден или не удалось обработать.")
                 # Если не удалось обработать — пробрасываем ошибку дальше
 
             # Доп. проверка на блокировку .part-файла
@@ -993,14 +1053,23 @@ def download_video(
                 try:
                     part_file = None
                     base_path = os.path.normpath(os.path.join(output_path, output_name))
-                    for ext_try in ("m4a", "webm", "mp4", "mkv"):
-                        part_candidate = (
-                            base_path + f".f{audio_id}.{ext_try}.part" if audio_id
-                            else base_path + f".{ext_try}.part"
-                        )
+                    for ext_try in ("mp4", "mkv", "webm", "avi", "m4a", "mp3"):
+                        # Стандартный вариант
+                        part_candidate = base_path + f".{ext_try}.part"
                         if os.path.exists(part_candidate):
                             part_file = part_candidate
                             break
+                        # Вариант с суффиксом .f{video_id}
+                        part_candidate2 = base_path + f".f{video_id}.{ext_try}.part"
+                        if os.path.exists(part_candidate2):
+                            part_file = part_candidate2
+                            break
+                        # Вариант с суффиксом .f{audio_id}
+                        if audio_id:
+                            part_candidate3 = base_path + f".f{audio_id}.{ext_try}.part"
+                            if os.path.exists(part_candidate3):
+                                part_file = part_candidate3
+                                break
 
                     if part_file:
                         try:
