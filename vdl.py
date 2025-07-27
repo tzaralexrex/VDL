@@ -123,7 +123,7 @@ browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
 brotli = import_or_update('brotli')
-pycryptodomex = import_or_update('pycryptodomex')
+pycryptodomex = import_or_update('Cryptodome', 'pycryptodomex')
 
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
