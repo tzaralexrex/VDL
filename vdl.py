@@ -459,6 +459,27 @@ def choose_format(formats):
          desired_ext, video_ext, audio_ext,
          video_codec, audio_codec)
     """
+    # --- Автоматический выбор для трансляций ---
+    # Проверяем, есть ли признак live
+    is_live = any(f.get('protocol') == 'm3u8' or f.get('ext') == 'm3u8' for f in formats)
+    if is_live:
+        live_formats = [f for f in formats if f.get('ext') == 'm3u8']
+        if live_formats:
+            best_live = live_formats[-1]
+            print(Fore.YELLOW + "\nЭто трансляция! Доступны только потоковые форматы (m3u8)." + Style.RESET_ALL)
+            log_debug("Автоматический выбор m3u8 для трансляции.")
+            return (
+                best_live["format_id"],
+                None,
+                "mp4",           # итоговый контейнер
+                "m3u8", "",      # video_ext, audio_ext
+                best_live.get("vcodec", ""),
+                ""
+            )
+        else:
+            print(Fore.RED + "\nДля трансляции не найден ни один потоковый формат m3u8!" + Style.RESET_ALL)
+            log_debug("Нет доступных m3u8 форматов для трансляции.")
+            return (None, None, "mp4", "", "", "", "")
     # --------------------------- сортировка ---------------------------
     video_formats = [f for f in formats if f.get("vcodec") != "none"]
     audio_formats = [f for f in formats if f.get("acodec") != "none"
