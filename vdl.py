@@ -908,6 +908,16 @@ def download_video(
         'progress_hooks'   : [],      # заполним ниже
     }
 
+    # --- live_from_start для трансляций ---
+    try:
+        info = get_video_info(url, platform, cookie_file_path)
+        # Если это трансляция (is_live) или формат m3u8 — добавляем опцию
+        if info.get('is_live') or (isinstance(info.get('formats'), list) and any(f.get('ext') == 'm3u8' for f in info['formats'])):
+            ydl_opts['live_from_start'] = True
+            log_debug("Добавлена опция live_from_start для трансляции.")
+    except Exception as e:
+        log_debug(f"Не удалось определить is_live: {e}")
+
     if manifest_mode:                 # DASH/HLS – склейку доверяем yt-dlp
         ydl_opts['postprocessors'] = [{'key': 'FFmpegMerger'}]
         log_debug("Обнаружен поток-манифест – задействуем FFmpegMerger.")
