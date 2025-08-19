@@ -487,6 +487,21 @@ def choose_format(formats):
 
     video_formats.sort(key=lambda f: (f.get("height") or 0,
                                       f.get("format_id", "")))
+    # --- Логируем список форматов для отладки ---
+    log_debug("Список видеоформатов после сортировки:")
+    for idx, f in enumerate(video_formats):
+        log_debug(f"{idx}: id={f.get('format_id')} ext={f.get('ext')} height={f.get('height')}")
+
+    # --- Ищем лучший mp4 по высоте ---
+    mp4_indexes = [i for i, f in enumerate(video_formats) if f.get("ext", "").lower() == "mp4"]
+    if mp4_indexes:
+        best_mp4_index = max(mp4_indexes, key=lambda i: video_formats[i].get("height") or 0)
+        default_video = best_mp4_index
+        log_debug(f"Лучший mp4: индекс={best_mp4_index}, height={video_formats[best_mp4_index].get('height')}")
+    else:
+        default_video = len(video_formats) - 1
+        log_debug(f"mp4 не найден, default_video={default_video}")   
+
     audio_formats.sort(key=lambda f: (
         f.get("abr") or 0,
         '-drc' in f.get("format_id", "")
@@ -527,7 +542,6 @@ def choose_format(formats):
         rez    = f"{height}p" if height else note or "?p"
         print(f"{i}: {fmt_id}  –  {ext}  –  {rez}  –  {vcodec}")
 
-    default_video = len(video_formats) - 1
     v_choice = input(
         Fore.CYAN + f"Выберите видеоформат (Enter = {default_video}): "
         + Style.RESET_ALL
@@ -574,11 +588,21 @@ def choose_format(formats):
                                {af["ext"] for af in audio_formats})
 
         # выбираем первый совместимый по умолчанию
-        default_audio = next(
-            (i for i, f in enumerate(audio_formats)
-             if f.get("ext", "").lower() in allowed),
-            len(audio_formats) - 1
-        )
+        # --- Новый способ выбора лучшего совместимого аудиоформата ---
+        allowed = compat.get(video_ext, {af["ext"] for af in audio_formats})
+        compatible_audios = [
+            (i, f) for i, f in enumerate(audio_formats)
+            if f.get("ext", "").lower() in allowed
+        ]
+        if compatible_audios:
+            # Сортируем по abr (по убыванию) и без -drc
+            compatible_audios.sort(key=lambda x: (
+                '-drc' in x[1].get("format_id", ""),  # сначала без drc
+                -(x[1].get("abr") or 0)               # потом по убыванию abr
+            ))
+            default_audio = compatible_audios[0][0]
+        else:
+            default_audio = len(audio_formats) - 1
 
         while True:
             a_choice = input(
@@ -1299,6 +1323,11 @@ def get_compatible_exts(ext):
     return compat.get(ext, {ext})
 
 def find_best_video(formats, ref_ext):
+    # Сначала ищем лучший mp4
+    mp4_candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext', '').lower() == 'mp4']
+    if mp4_candidates:
+        return max(mp4_candidates, key=lambda f: (f.get('height') or 0, f.get('tbr') or 0))
+    # Потом ищем совместимые с ref_ext
     compatible_exts = get_compatible_exts(ref_ext)
     candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext') in compatible_exts]
     if candidates:
