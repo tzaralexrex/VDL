@@ -800,6 +800,18 @@ def ask_output_filename(default_name, output_path, output_format):
     """
     current_name = default_name
     log_debug(f"Предлагаемое имя файла (по умолчанию): {default_name}")
+
+    # --- Копируем имя файла в буфер обмена Windows ---
+    if platform.system().lower() == "windows":
+        try:
+            import subprocess
+            clipboard_text = f"{current_name}"
+            # Используем UTF-16LE для корректной работы clip с кириллицей
+            subprocess.run('clip', input=clipboard_text.encode('utf-16le'), check=True)
+            print(Fore.YELLOW + f"(Имя файла '{clipboard_text}' скопировано в буфер обмена)" + Style.RESET_ALL)
+        except Exception as e:
+            log_debug(f"Не удалось скопировать имя файла в буфер обмена: {e}")
+
     while True:
         proposed_full_path = os.path.normpath(os.path.join(output_path, current_name + '.' + output_format))
         log_debug(f"Проверка имени файла: {proposed_full_path}")
