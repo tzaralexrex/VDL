@@ -62,22 +62,24 @@ except ImportError:
     from importlib_metadata import version as get_version, PackageNotFoundError  # type: ignore
 
 # --- Универсальный импорт и автообновление внешних модулей ---
-def import_or_update(module_name, pypi_name=None, min_version=None):
+def import_or_update(module_name, pypi_name=None, min_version=None, force_check=False):
     """
     Импортирует модуль, при необходимости устанавливает или обновляет его до актуальной версии с PyPI.
     :param module_name: имя для importlib.import_module
     :param pypi_name: имя пакета на PyPI (если отличается)
     :param min_version: минимальная версия (опционально)
+    :param force_check: принудительно проверять версии даже если CHECK_VER=0
     :return: импортированный модуль
     """
     pypi_name = pypi_name or module_name
-    if not CHECK_VER:
+    if not CHECK_VER and not force_check:
         # Только проверка наличия модуля
         try:
             return importlib.import_module(module_name)
         except ImportError:
             print(f"\n[!] Необходимый модуль {pypi_name} не установлен. Установите его вручную командой:\n    pip install {pypi_name}\nРабота невозможна.")
             sys.exit(1)
+
     # Полная проверка с версионностью
     print(f"Проверяю наличие и актуальность модуля {pypi_name}", end='', flush=True)
     try:
@@ -118,7 +120,7 @@ def import_or_update(module_name, pypi_name=None, min_version=None):
         return importlib.import_module(module_name)
 
 # Импорт сторонних модулей через универсальную функцию
-yt_dlp = import_or_update('yt_dlp')
+yt_dlp = import_or_update('yt_dlp', force_check=True)
 browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
@@ -801,6 +803,8 @@ def ask_output_filename(default_name, output_path, output_format):
     current_name = default_name
     log_debug(f"Предлагаемое имя файла (по умолчанию): {default_name}")
 
+    clipboard_copied = False
+
     # --- Копируем имя файла в буфер обмена Windows ---
     if platform.system().lower() == "windows":
         try:
@@ -808,27 +812,31 @@ def ask_output_filename(default_name, output_path, output_format):
             clipboard_text = f"{current_name}"
             # Используем UTF-16LE для корректной работы clip с кириллицей
             subprocess.run('clip', input=clipboard_text.encode('utf-16le'), check=True)
-            print(Fore.YELLOW + f"(Имя файла '{clipboard_text}' скопировано в буфер обмена)" + Style.RESET_ALL)
+            clipboard_copied = True
         except Exception as e:
             log_debug(f"Не удалось скопировать имя файла в буфер обмена: {e}")
 
     while True:
         proposed_full_path = os.path.normpath(os.path.join(output_path, current_name + '.' + output_format))
         log_debug(f"Проверка имени файла: {proposed_full_path}")
-        
+
         print(f"\n{Fore.MAGENTA}Предлагаемое имя файла: {Fore.GREEN}{current_name}.{output_format}{Style.RESET_ALL}")
+        if clipboard_copied:
+            print(Fore.YELLOW + f"(Имя файла скопировано в буфер обмена)" + Style.RESET_ALL)
+            clipboard_copied = False  # Показываем только один раз
+
         name_input = input(Fore.CYAN + "Введите имя файла (Enter — оставить по умолчанию): " + Style.RESET_ALL).strip()
-        
-        if not name_input: # Пользователь нажал Enter, использует предложенное имя
+
+        if not name_input:  # Пользователь нажал Enter, использует предложенное имя
             if os.path.exists(proposed_full_path):
                 print(Fore.YELLOW + f"Файл '{current_name}.{output_format}' уже существует." + Style.RESET_ALL)
                 log_debug(f"Файл '{proposed_full_path}' существует. Запрос действия.")
-                choice = input(Fore.CYAN + "Перезаписать (0), выбрать другое имя (1), или добавить индекс (2)? (по умолчанию: 2): " + Style.RESET_ALL).strip() 
-                
+                choice = input(Fore.CYAN + "Перезаписать (0), выбрать другое имя (1), или добавить индекс (2)? (по умолчанию: 2): " + Style.RESET_ALL).strip()
+
                 if choice == '0':
                     print(Fore.RED + f"ВНИМАНИЕ: Файл '{current_name}.{output_format}' будет перезаписан." + Style.RESET_ALL)
                     log_debug(f"Выбрано: перезаписать файл '{proposed_full_path}'.")
-                    return current_name # Возвращаем текущее имя для перезаписи
+                    return current_name  # Возвращаем текущее имя для перезаписи
                 elif choice == '1':
                     # Предлагаем пользователю ввести новое имя
                     print(Fore.CYAN + "Введите новое имя файла: " + Style.RESET_ALL)
@@ -836,11 +844,11 @@ def ask_output_filename(default_name, output_path, output_format):
                     log_debug(f"Выбрано: ввести новое имя. Введено: '{new_name}'.")
                     if new_name:
                         current_name = new_name
-                    else: # Если пользователь ничего не ввел, возвращаемся к началу цикла
+                    else:  # Если пользователь ничего не ввел, возвращаемся к началу цикла
                         print(Fore.YELLOW + "Имя файла не было введено. Попробуйте снова." + Style.RESET_ALL)
                         log_debug("Новое имя файла не введено. Повторный запрос.")
                         continue
-                else: # '2' или любой другой некорректный ввод - добавляем индекс
+                else:  # '2' или любой другой некорректный ввод - добавляем индекс
                     idx = 1
                     while True:
                         indexed_name = f"{current_name}_{idx}"
@@ -853,25 +861,25 @@ def ask_output_filename(default_name, output_path, output_format):
                         idx += 1
             else:
                 log_debug(f"Файл '{proposed_full_path}' не существует. Используем это имя.")
-                return current_name # Файл не существует, можно использовать это имя
-        else: # Пользователь ввел новое имя
+                return current_name  # Файл не существует, можно использовать это имя
+        else:  # Пользователь ввел новое имя
             new_name = name_input
             new_full_path = os.path.normpath(os.path.join(output_path, new_name + '.' + output_format))
             log_debug(f"Пользователь ввел новое имя: '{new_name}'. Проверка: {new_full_path}")
             if os.path.exists(new_full_path):
                 print(Fore.YELLOW + f"Файл '{new_full_path}' уже существует." + Style.RESET_ALL)
                 log_debug(f"Новое имя '{new_full_path}' уже существует. Запрос действия.")
-                choice = input(Fore.CYAN + "Перезаписать (0), выбрать другое имя (1), или добавить индекс (2)? (по умолчанию: 2): " + Style.RESET_ALL).strip() 
-                
+                choice = input(Fore.CYAN + "Перезаписать (0), выбрать другое имя (1), или добавить индекс (2)? (по умолчанию: 2): " + Style.RESET_ALL).strip()
+
                 if choice == '0':
                     print(Fore.RED + f"ВНИМАНИЕ: Файл '{new_full_path}' будет перезаписан." + Style.RESET_ALL)
                     log_debug(f"Выбрано: перезаписать файл '{new_full_path}'.")
                     return new_name
                 elif choice == '1':
-                    current_name = new_name # Устанавливаем новое имя для следующей итерации
+                    current_name = new_name  # Устанавливаем новое имя для следующей итерации
                     log_debug(f"Выбрано: ввести другое имя. Переход к следующей итерации.")
-                    continue # Возвращаемся к началу цикла, чтобы запросить новое имя
-                else: # '2' или любой другой некорректный ввод - добавляем индекс
+                    continue  # Возвращаемся к началу цикла, чтобы запросить новое имя
+                else:  # '2' или любой другой некорректный ввод - добавляем индекс
                     idx = 1
                     while True:
                         indexed_name = f"{new_name}_{idx}"
@@ -884,8 +892,8 @@ def ask_output_filename(default_name, output_path, output_format):
                         idx += 1
             else:
                 log_debug(f"Введенное имя '{new_full_path}' не существует. Используем его.")
-                return new_name # Введенное имя не существует, используем его
-
+                return new_name  # Введенное имя не существует, используем его
+            
 def ask_output_format(default_format):
     formats = ['mp4', 'mkv', 'avi', 'webm']
     print("\n" + Fore.MAGENTA + "Выберите выходной формат:" + Style.RESET_ALL)
@@ -1579,7 +1587,11 @@ def main():
     auto_mode = args.auto
     raw_url = args.url
     if not raw_url:
-        raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
+        # Ждём непустого ввода
+        while True:
+            raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
+            if raw_url:
+                break
     else:
         print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
     log_debug(f"Введена ссылка: {raw_url}")
