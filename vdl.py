@@ -20,7 +20,11 @@ from shutil import which
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
-DEBUG_FILE = 'debug.log'
+DEBUG_FILE = 'debug.log' # имя файла журнала отладки
+InitialDir = "Video"  # относительный путь к подпапке Video в текущей директории для автоматического выбора папки скачивания
+
+PAGE_SIZE = 20    # количество видео на одной странице при выводе плейлиста
+PAGE_TIMEOUT = 10 # таймаут ожидания (секунд) между страницами плейлиста
 
 COOKIES_FB = 'cookies_fb.txt'
 COOKIES_YT = 'cookies_yt.txt'
@@ -454,7 +458,7 @@ def safe_get_video_info(url: str, platform: str):
     sys.exit(1)
 
 
-def choose_format(formats):
+def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
     """
     Возвращает кортеж:
         (video_id, audio_id|None,
@@ -544,13 +548,16 @@ def choose_format(formats):
         rez    = f"{height}p" if height else note or "?p"
         print(f"{i}: {fmt_id}  –  {ext}  –  {rez}  –  {vcodec}")
 
-    v_choice = input(
-        Fore.CYAN + f"Выберите видеоформат (Enter = {default_video}): "
-        + Style.RESET_ALL
-    ).strip()
-    v_choice = (int(v_choice) if v_choice.isdigit()
-                and 0 <= int(v_choice) < len(video_formats)
-                else default_video)
+    if auto_mode:
+        v_choice = default_video
+    else:
+        v_choice = input(
+            Fore.CYAN + f"Выберите видеоформат (Enter = {default_video}): "
+            + Style.RESET_ALL
+        ).strip()
+        v_choice = (int(v_choice) if v_choice.isdigit()
+                    and 0 <= int(v_choice) < len(video_formats)
+                    else default_video)
 
     video_fmt = video_formats[v_choice]
     log_debug(
@@ -568,7 +575,8 @@ def choose_format(formats):
             "будет использован звук, встроенный в видео."
             + Style.RESET_ALL
         )
-        input(Fore.CYAN + "Enter для продолжения…" + Style.RESET_ALL)
+        if not auto_mode:
+            input(Fore.CYAN + "Enter для продолжения…" + Style.RESET_ALL)
     else:
         print("\n" + Fore.MAGENTA + "Доступные аудиоформаты:" + Style.RESET_ALL)
         for i, f in enumerate(audio_formats):
@@ -607,13 +615,16 @@ def choose_format(formats):
             default_audio = len(audio_formats) - 1
 
         while True:
-            a_choice = input(
-                Fore.CYAN + f"Выберите аудио (Enter = {default_audio}): "
-                + Style.RESET_ALL
-            ).strip()
-            a_choice = (int(a_choice) if a_choice.isdigit()
-                        and 0 <= int(a_choice) < len(audio_formats)
-                        else default_audio)
+            if auto_mode:
+                a_choice = default_audio
+            else:
+                a_choice = input(
+                    Fore.CYAN + f"Выберите аудио (Enter = {default_audio}): "
+                    + Style.RESET_ALL
+                ).strip()
+                a_choice = (int(a_choice) if a_choice.isdigit()
+                            and 0 <= int(a_choice) < len(audio_formats)
+                            else default_audio)
 
             audio_fmt = audio_formats[a_choice]
             audio_ext = audio_fmt.get("ext", "").lower()
@@ -644,7 +655,7 @@ def choose_format(formats):
         audio_fmt.get("acodec", "") if audio_fmt else ""
     )
 
-def ask_and_select_subtitles(info):
+def ask_and_select_subtitles(info, auto_mode=False):
     subtitles_info = info.get('subtitles') or {}
     auto_info = info.get('automatic_captions') or {}
 
@@ -675,60 +686,73 @@ def ask_and_select_subtitles(info):
             if intersect:
                 print(Fore.CYAN + f"\nТакже доступны автоматические субтитры для: {', '.join(intersect)}" + Style.RESET_ALL)
 
-        sel = input(Fore.CYAN + "\nВведите номера или коды языков (например, '1,3' или 'en,ru'), '-' — не скачивать субтитры (по умолчанию: 0 — все): " + Style.RESET_ALL).strip()
-        if sel == '-':
-            print(Fore.YELLOW + "Загрузка субтитров отменена пользователем." + Style.RESET_ALL)
-            return None
-
-        if not sel or sel == '0':
+        if auto_mode:
             selected_langs = numbered
+            # В авто-режиме не спрашиваем про автоматические субтитры, просто не скачиваем их отдельно
+            write_automatic = False
         else:
-            parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
-            for p in parts:
-                if p.isdigit():
-                    i = int(p) - 1
-                    if 0 <= i < len(numbered):
-                        selected_langs.append(numbered[i])
-                elif p in numbered:
-                    selected_langs.append(p)
+            sel = input(Fore.CYAN + "\nВведите номера или коды языков (например, '1,3' или 'en,ru'), '-' — не скачивать субтитры (по умолчанию: 0 — все): " + Style.RESET_ALL).strip()
+            if sel == '-':
+                print(Fore.YELLOW + "Загрузка субтитров отменена пользователем." + Style.RESET_ALL)
+                return None
 
-        selected_langs = sorted(set(selected_langs))
-        if not selected_langs:
-            print(Fore.YELLOW + "Неверный выбор. Субтитры загружены не будут." + Style.RESET_ALL)
-            log_debug("Пустой или неверный выбор языков субтитров.")
-            return None
+            if not sel or sel == '0':
+                selected_langs = numbered
+            else:
+                parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+                for p in parts:
+                    if p.isdigit():
+                        i = int(p) - 1
+                        if 0 <= i < len(numbered):
+                            selected_langs.append(numbered[i])
+                    elif p in numbered:
+                        selected_langs.append(p)
 
-        for lang in selected_langs:
-            if lang in auto_info:
-                if input(Fore.CYAN + f"Скачать автоматические субтитры для языка '{lang}'? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip() == '1':
-                    download_automatics.add(lang)
+            selected_langs = sorted(set(selected_langs))
+            if not selected_langs:
+                print(Fore.YELLOW + "Неверный выбор. Субтитры загружены не будут." + Style.RESET_ALL)
+                log_debug("Пустой или неверный выбор языков субтитров.")
+                return None
 
-        write_automatic = bool(download_automatics)
+            for lang in selected_langs:
+                if lang in auto_info:
+                    if input(Fore.CYAN + f"Скачать автоматические субтитры для языка '{lang}'? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip() == '1':
+                        download_automatics.add(lang)
+
+            write_automatic = bool(download_automatics)
 
     elif use_auto:
         print(Fore.MAGENTA + "К видео доступны только автоматические субтитры для языков:" + Style.RESET_ALL)
         print(', '.join(sorted(auto_langs)))
-        sel = input(Fore.CYAN + "Введите языки для загрузки автоматических субтитров (например, 'en,ru'), '-' — не загружать (по умолчанию: en, ru): " + Style.RESET_ALL).strip()
-        if sel == '-':
-            print(Fore.YELLOW + "Загрузка субтитров отменена пользователем." + Style.RESET_ALL)
-            return None
-        elif not sel:
+        if auto_mode:
+            # В авто-режиме выбираем en и ru, если есть, иначе все доступные
             default_langs = ['en', 'ru']
             selected_langs = [lang for lang in default_langs if lang in auto_langs]
-            print(Fore.GREEN + f"По умолчанию выбраны автоматические субтитры: {', '.join(selected_langs)}" + Style.RESET_ALL)
-        elif sel == '0':
-            selected_langs = auto_langs
+            if not selected_langs:
+                selected_langs = auto_langs
+            print(Fore.GREEN + f"Автоматически выбраны автоматические субтитры: {', '.join(selected_langs)}" + Style.RESET_ALL)
         else:
-            parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
-            for lang in parts:
-                if lang in auto_langs:
-                    selected_langs.append(lang)
+            sel = input(Fore.CYAN + "Введите языки для загрузки автоматических субтитров (например, 'en,ru'), '-' — не загружать (по умолчанию: en, ru): " + Style.RESET_ALL).strip()
+            if sel == '-':
+                print(Fore.YELLOW + "Загрузка субтитров отменена пользователем." + Style.RESET_ALL)
+                return None
+            elif not sel:
+                default_langs = ['en', 'ru']
+                selected_langs = [lang for lang in default_langs if lang in auto_langs]
+                print(Fore.GREEN + f"По умолчанию выбраны автоматические субтитры: {', '.join(selected_langs)}" + Style.RESET_ALL)
+            elif sel == '0':
+                selected_langs = auto_langs
+            else:
+                parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+                for lang in parts:
+                    if lang in auto_langs:
+                        selected_langs.append(lang)
         selected_langs = sorted(set(selected_langs))
         if not selected_langs:
             print(Fore.YELLOW + "Выбранные языки не найдены среди автоматических субтитров." + Style.RESET_ALL)
             return None
         download_automatics.update(selected_langs)
-        write_automatic = True
+        write_automatic = True if selected_langs else False
 
     print(Fore.GREEN + f"Выбранные языки субтитров: {', '.join(selected_langs)}" + Style.RESET_ALL)
     log_debug(f"Выбранные субтитры: {selected_langs}, автоматические: {sorted(download_automatics)}")
@@ -742,16 +766,20 @@ def ask_and_select_subtitles(info):
             available_formats.update(e['ext'] for e in auto_info[lang])
     if not available_formats:
         available_formats = {'srt', 'vtt'}  # fallback
-    
+
     default_format = 'srt' if 'srt' in available_formats else sorted(available_formats)[0]
-    print(Fore.CYAN + f"\nВ каком формате сохранить субтитры? ({'/'.join(sorted(available_formats))}, Enter = {default_format}): " + Style.RESET_ALL)
-    sub_format = input().strip().lower()
-    if not sub_format or sub_format not in available_formats:
+    if auto_mode:
         sub_format = default_format
-    
-    print(Fore.GREEN + f"Выбранный формат субтитров: {sub_format}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"Автоматически выбран формат субтитров: {sub_format}" + Style.RESET_ALL)
+    else:
+        print(Fore.CYAN + f"\nВ каком формате сохранить субтитры? ({'/'.join(sorted(available_formats))}, Enter = {default_format}): " + Style.RESET_ALL)
+        sub_format = input().strip().lower()
+        if not sub_format or sub_format not in available_formats:
+            sub_format = default_format
+
+        print(Fore.GREEN + f"Выбранный формат субтитров: {sub_format}" + Style.RESET_ALL)
     log_debug(f"Выбранный формат субтитров: {sub_format}")
-    
+
     return {
         'writesubtitles': use_embedded,
         'writeautomaticsub': write_automatic,
@@ -759,9 +787,14 @@ def ask_and_select_subtitles(info):
         'subtitlesformat': sub_format
     }
 
-def select_output_folder():
+def select_output_folder(auto_mode=False):
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
     system = platform.system().lower()
+    if auto_mode:
+        folder = os.path.abspath(InitialDir)
+        os.makedirs(folder, exist_ok=True)
+        print(Fore.GREEN + f"Автоматически выбрана папка: {folder}" + Style.RESET_ALL)
+        return folder
     if system == "windows" and tk is not None and filedialog is not None:
         try:
             # Сохраняем хэндл активного окна
@@ -787,6 +820,11 @@ def select_output_folder():
             log_debug(f"Ошибка выбора папки через tkinter: {e}")
     # Fallback для не-Windows или если tkinter не работает
     while True:
+        if auto_mode:
+            folder = os.path.abspath(InitialDir)
+            os.makedirs(folder, exist_ok=True)
+            print(Fore.GREEN + f"Автоматически выбрана папка: {folder}" + Style.RESET_ALL)
+            return folder
         folder = input(Fore.CYAN + "Введите путь к папке для сохранения: " + Style.RESET_ALL).strip()
         if not folder:
             print(Fore.YELLOW + "Путь не введён. Попробуйте снова." + Style.RESET_ALL)
@@ -796,7 +834,7 @@ def select_output_folder():
             continue
         return os.path.normpath(folder)
 
-def ask_output_filename(default_name, output_path, output_format):
+def ask_output_filename(default_name, output_path, output_format, auto_mode=False):
     """
     Запрашивает имя файла, проверяет существование и предлагает варианты при совпадении.
     """
@@ -824,6 +862,19 @@ def ask_output_filename(default_name, output_path, output_format):
         if clipboard_copied:
             print(Fore.YELLOW + f"(Имя файла скопировано в буфер обмена)" + Style.RESET_ALL)
             clipboard_copied = False  # Показываем только один раз
+
+        if auto_mode:
+            # Если файл существует — добавить индекс, иначе использовать текущее имя
+            if os.path.exists(proposed_full_path):
+                idx = 1
+                while True:
+                    indexed_name = f"{current_name}_{idx}"
+                    indexed_full_path = os.path.normpath(os.path.join(output_path, indexed_name + '.' + output_format))
+                    if not os.path.exists(indexed_full_path):
+                        return indexed_name
+                    idx += 1
+            else:
+                return current_name
 
         name_input = input(Fore.CYAN + "Введите имя файла (Enter — оставить по умолчанию): " + Style.RESET_ALL).strip()
 
@@ -894,7 +945,7 @@ def ask_output_filename(default_name, output_path, output_format):
                 log_debug(f"Введенное имя '{new_full_path}' не существует. Используем его.")
                 return new_name  # Введенное имя не существует, используем его
             
-def ask_output_format(default_format):
+def ask_output_format(default_format, auto_mode=False):
     formats = ['mp4', 'mkv', 'avi', 'webm']
     print("\n" + Fore.MAGENTA + "Выберите выходной формат:" + Style.RESET_ALL)
     for i, f in enumerate(formats):
@@ -906,6 +957,11 @@ def ask_output_format(default_format):
         default_format = 'mp4'
         default_format_index = formats.index(default_format)
     log_debug(f"Начальный/дефолтный выходной формат: {default_format} (индекс {default_format_index})")
+
+    if auto_mode:
+        print(Fore.GREEN + f"Использование формата по умолчанию: {default_format}" + Style.RESET_ALL)
+        log_debug(f"Выбран формат по умолчанию: {default_format} (auto_mode)")
+        return default_format
 
     choice = input(Fore.CYAN + f"Номер формата (по умолчанию {default_format_index}: {default_format}): " + Style.RESET_ALL).strip()
     
@@ -1473,7 +1529,7 @@ def mux_mkv_with_subs_and_chapters(
     except Exception as mux_err:
         print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
 
-def print_playlist_paginated(entries, page_size=20, timeout=10, playlist_title=None):
+def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=None, auto_mode=False):
     """
     Выводит список видео плейлиста порциями по page_size.
     После каждой порции ждёт Enter или timeout секунд.
@@ -1554,8 +1610,17 @@ def print_playlist_paginated(entries, page_size=20, timeout=10, playlist_title=N
         default_filename = f"{playlist_title}.txt"
     else:
         default_filename = "playlist.txt"
-    answer = input(Fore.CYAN + f"\nСохранить список видео в файл '{default_filename}'? (1 — да, Enter — нет): " + Style.RESET_ALL).strip()
-    if answer == "1":
+
+    save_list = True  # по умолчанию сохраняем
+    if auto_mode:
+        answer = "1"
+    else:
+        answer = input(
+            Fore.CYAN + f"\nСохранить список видео в файл '{default_filename}'? (Enter — сохранить, 0 или - — не сохранять): " + Style.RESET_ALL
+        ).strip()
+    if answer in ("0", "-"):
+        save_list = False
+    if save_list:
         try:
             with open(default_filename, "w", encoding="utf-8") as f:
                 for line in all_lines:
@@ -1662,7 +1727,7 @@ def main():
                 cookie_file_to_use = entry_info.get('__cookiefile__')
                 chapters = entry_info.get("chapters")
                 has_chapters = isinstance(chapters, list) and len(chapters) > 0
-                video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
+                video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=auto_mode, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
                 if video_id == "bestvideo+bestaudio/best":
                     quality_map = {
                         "0": ("bestvideo+bestaudio/best", "Максимальное"),
@@ -1678,7 +1743,7 @@ def main():
                     selected = quality_map.get(choice, quality_map["0"])
                     video_id = selected[0]
                     log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
-                subtitle_download_options = ask_and_select_subtitles(entry_info)
+                subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=auto_mode)
                 save_chapter_file = False
                 integrate_chapters = False
                 keep_chapter_file = False
@@ -1687,7 +1752,7 @@ def main():
                     ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                     save_chapter_file = ask_chaps != "0"
                     log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
-                output_path = select_output_folder()
+                output_path = select_output_folder(uto_mode=auto_mode)
                 if saved_list_path and os.path.isfile(saved_list_path):
                     try:
                         dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
@@ -1695,7 +1760,7 @@ def main():
                         print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                     except Exception as e:
                         print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
-                output_format = ask_output_format(desired_ext)
+                output_format = ask_output_format(desired_ext, auto_mode=auto_mode)
                 integrate_subs = False
                 keep_sub_files = True
                 subs_to_integrate_langs = []
@@ -1741,7 +1806,7 @@ def main():
                 if add_index_prefix:
                     safe_title = f"{first_idx:02d} {safe_title}"
                 log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                output_name = ask_output_filename(safe_title, output_path, output_format)
+                output_name = ask_output_filename(safe_title, output_path, output_format, auto_mode=auto_mode)
                 log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
                 if (save_chapter_file or integrate_chapters) and has_chapters:
                     chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
