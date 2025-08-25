@@ -52,11 +52,10 @@ def ensure_base_dependencies():
             print(f"[!] Необходимый модуль {pkg} не найден. Устанавливаем...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
     # Глобальный импорт
-    global requests, packaging
+    global requests, packaging, parse_version
     import requests
     import packaging
     from packaging.version import parse as parse_version
-    packaging.parse_version = parse_version  # для удобства
 
 ensure_base_dependencies()
 
@@ -97,7 +96,7 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
                     installed = get_version(pypi_name)
                 except PackageNotFoundError:
                     installed = getattr(module, '__version__', None)
-                if installed and packaging.parse_version(installed) < packaging.parse_version(latest):
+                if installed and parse_version(installed) < parse_version(latest):
                     print()  # Завершить строку перед сообщением
                     print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
@@ -111,7 +110,7 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
                 installed = get_version(pypi_name)
             except PackageNotFoundError:
                 installed = getattr(module, '__version__', None)
-            if installed and packaging.parse_version(installed) < packaging.parse_version(min_version):
+            if installed and parse_version(installed) < parse_version(min_version):
                 print()  # Завершить строку перед сообщением
                 print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
@@ -656,6 +655,7 @@ def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
     )
 
 def ask_and_select_subtitles(info, auto_mode=False):
+    write_automatic = False
     subtitles_info = info.get('subtitles') or {}
     auto_info = info.get('automatic_captions') or {}
 
@@ -1093,6 +1093,7 @@ def download_video(
                 base_path = os.path.normpath(os.path.join(output_path, output_name))
                 found_parts = []
                 # Возможные расширения
+                ext_try = None
                 for ext_try in ("mp4", "mkv", "webm", "avi", "m4a", "mp3"):
                     # Стандартный вариант
                     candidate_part = base_path + f".{ext_try}.part"
@@ -1157,10 +1158,11 @@ def download_video(
                         # --- Переименовываем видео и аудио, если оба скачаны ---
                         video_ok = (expected_size and part_size >= expected_size) or (not expected_size and part_size > 10 * 1024 * 1024)
                         if video_ok and audio_ok:
-                            os.rename(part_file, final_file)
-                            log_debug(f"Переименован видеофайл: {part_file} → {final_file}")
-                            print(Fore.YELLOW + f"\nФайл {part_file} был скачан полностью, переименован в {final_file}." + Style.RESET_ALL)
-                            if audio_id and audio_part_file:
+                            if part_file is not None and final_file is not None:
+                                os.rename(part_file, final_file)
+                                log_debug(f"Переименован видеофайл: {part_file} → {final_file}")
+                                print(Fore.YELLOW + f"\nФайл {part_file} был скачан полностью, переименован в {final_file}." + Style.RESET_ALL)
+                            if audio_id and audio_part_file is not None and audio_final_file is not None:
                                 os.rename(audio_part_file, audio_final_file)
                                 log_debug(f"Переименован аудиофайл: {audio_part_file} → {audio_final_file}")
                                 print(Fore.YELLOW + f"\nАудиофайл {audio_part_file} был скачан полностью, переименован в {audio_final_file}." + Style.RESET_ALL)
