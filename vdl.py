@@ -129,6 +129,7 @@ colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
 brotli = import_or_update('brotli')
 pycryptodomex = import_or_update('Cryptodome', 'pycryptodomex')
+ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
 
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
@@ -1633,6 +1634,38 @@ def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT,
             print(Fore.RED + f"Ошибка при сохранении файла: {e}" + Style.RESET_ALL)
     return saved_list_path
 
+def check_mkv_integrity(filepath, expected_video_codec=None, expected_audio_codec=None, expected_sub_langs=None, expected_chapters=False):
+    """
+    Проверяет, что в MKV-файле присутствуют нужные дорожки (видео, аудио, субтитры, главы).
+    expected_sub_langs — список языков субтитров (['ru', 'en'] и т.д.)
+    expected_chapters — True/False (ожидаются ли главы)
+    Возвращает True, если всё соответствует, иначе False.
+    """
+    try:
+        probe = ffmpeg.probe(filepath)
+        streams = probe.get('streams', [])
+        video_ok = audio_ok = subs_ok = chaps_ok = True
+
+        # Проверка видео
+        if expected_video_codec:
+            video_ok = any(s['codec_type'] == 'video' and expected_video_codec in s.get('codec_name', '') for s in streams)
+        # Проверка аудио
+        if expected_audio_codec:
+            audio_ok = any(s['codec_type'] == 'audio' and expected_audio_codec in s.get('codec_name', '') for s in streams)
+        # Проверка субтитров
+        if expected_sub_langs:
+            found_langs = [s.get('tags', {}).get('language', '').lower() for s in streams if s['codec_type'] == 'subtitle']
+            subs_ok = all(lang.lower() in found_langs for lang in expected_sub_langs)
+        # Проверка глав
+        chaps_ok = True
+        if expected_chapters:
+            chaps_ok = 'chapters' in probe and len(probe['chapters']) > 0
+
+        return video_ok and audio_ok and subs_ok and chaps_ok
+    except Exception as e:
+        log_debug(f"Ошибка при проверке MKV: {e}")
+        return False
+
 def main():
     print(Fore.YELLOW + "Universal Video Downloader")
 
@@ -1754,7 +1787,7 @@ def main():
                     ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                     save_chapter_file = ask_chaps != "0"
                     log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
-                output_path = select_output_folder(uto_mode=auto_mode)
+                output_path = select_output_folder(auto_mode=auto_mode)
                 if saved_list_path and os.path.isfile(saved_list_path):
                     try:
                         dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
@@ -2125,6 +2158,39 @@ def main():
                     integrate_chapters, keep_chapter_file, chapter_filename
                 )
 
+        # --- Блок финальной проверки итогового файла ---
+        final_file = None
+        if 'downloaded_file' in locals() and downloaded_file and os.path.isfile(downloaded_file):
+            final_file = downloaded_file
+        # Для плейлистов можно добавить аналогично, если нужно
+
+        if final_file and output_format.lower() == 'mkv':
+            log_debug(f"Финальная проверка MKV-файла: {final_file}")
+            # Собираем ожидаемые параметры
+            expected_video_codec = video_codec if 'video_codec' in locals() else None
+            expected_audio_codec = audio_codec if 'audio_codec' in locals() else None
+            expected_sub_langs = subs_to_integrate_langs if integrate_subs else []
+            expected_chapters = integrate_chapters
+
+            ok = check_mkv_integrity(
+                final_file,
+                expected_video_codec=expected_video_codec,
+                expected_audio_codec=expected_audio_codec,
+                expected_sub_langs=expected_sub_langs,
+                expected_chapters=expected_chapters
+            )
+            if not ok:
+                log_debug("Файл MKV не соответствует выбранным опциям — запускаем принудительную интеграцию.")
+                print(Fore.YELLOW + "Файл MKV не содержит все выбранные дорожки. Запускается повторная интеграция..." + Style.RESET_ALL)
+                mux_mkv_with_subs_and_chapters(
+                    final_file, output_name, output_path,
+                    subs_to_integrate_langs, subtitle_download_options,
+                    integrate_subs, keep_sub_files,
+                    integrate_chapters, keep_chapter_file, chapter_filename
+                )
+            else:
+                log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.")
+ 
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
         log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
