@@ -37,6 +37,20 @@ MAX_RETRIES = 15  # Максимум попыток повторной загр�
 
 CHECK_VER = 1  # 1 = проверять версии зависимостей, 0 = только наличие модулей
 
+# --- Глобальные переменные для хранения пользовательских выборов ---
+USER_SELECTED_SUB_LANGS = []
+USER_SELECTED_SUB_FORMAT = None
+USER_INTEGRATE_SUBS = False
+USER_KEEP_SUB_FILES = True
+USER_INTEGRATE_CHAPTERS = False
+USER_KEEP_CHAPTER_FILE = False
+USER_SELECTED_VIDEO_CODEC = None
+USER_SELECTED_AUDIO_CODEC = None
+USER_SELECTED_OUTPUT_FORMAT = None
+USER_SELECTED_CHAPTER_FILENAME = None
+USER_SELECTED_OUTPUT_NAME = None
+USER_SELECTED_OUTPUT_PATH = None
+
 # поддержка модуля importlib.metadata для Python <3.8
 try:
     from importlib.metadata import version as get_version, PackageNotFoundError
@@ -1651,6 +1665,10 @@ def check_mkv_integrity(filepath, expected_video_codec=None, expected_audio_code
 def main():
     print(Fore.YELLOW + "Universal Video Downloader")
 
+    global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
+    global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
+    global USER_SELECTED_OUTPUT_FORMAT, USER_SELECTED_CHAPTER_FILENAME, USER_SELECTED_OUTPUT_NAME, USER_SELECTED_OUTPUT_PATH
+
     # Проверка наличия ffmpeg
     ffmpeg_path = detect_ffmpeg_path()
     if not ffmpeg_path:
@@ -1745,6 +1763,9 @@ def main():
                 chapters = entry_info.get("chapters")
                 has_chapters = isinstance(chapters, list) and len(chapters) > 0
                 video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=auto_mode, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
+                global USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
+                USER_SELECTED_VIDEO_CODEC = video_codec
+                USER_SELECTED_AUDIO_CODEC = audio_codec
                 if video_id == "bestvideo+bestaudio/best":
                     quality_map = {
                         "0": ("bestvideo+bestaudio/best", "Максимальное"),
@@ -1765,11 +1786,17 @@ def main():
                 integrate_chapters = False
                 keep_chapter_file = False
                 chapter_filename = None
+                global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_CHAPTER_FILENAME
+                USER_INTEGRATE_CHAPTERS = integrate_chapters
+                USER_KEEP_CHAPTER_FILE = keep_chapter_file
+                USER_SELECTED_CHAPTER_FILENAME = chapter_filename
                 if has_chapters:
                     ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                     save_chapter_file = ask_chaps != "0"
                     log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
                 output_path = select_output_folder(auto_mode=auto_mode)
+                global USER_SELECTED_OUTPUT_PATH
+                USER_SELECTED_OUTPUT_PATH = output_path
                 if saved_list_path and os.path.isfile(saved_list_path):
                     try:
                         dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
@@ -1778,9 +1805,16 @@ def main():
                     except Exception as e:
                         print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
                 output_format = ask_output_format(desired_ext, auto_mode=auto_mode)
+                global USER_SELECTED_OUTPUT_FORMAT
+                USER_SELECTED_OUTPUT_FORMAT = output_format
                 integrate_subs = False
                 keep_sub_files = True
                 subs_to_integrate_langs = []
+                global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
+                USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
+                USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
+                USER_INTEGRATE_SUBS = integrate_subs
+                USER_KEEP_SUB_FILES = keep_sub_files
                 if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
                     available_langs = subtitle_download_options['subtitleslangs']
                     print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
@@ -1824,6 +1858,8 @@ def main():
                     safe_title = f"{first_idx:02d} {safe_title}"
                 log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
                 output_name = ask_output_filename(safe_title, output_path, output_format, auto_mode=auto_mode)
+                global USER_SELECTED_OUTPUT_NAME
+                USER_SELECTED_OUTPUT_NAME = output_name
                 log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
                 if (save_chapter_file or integrate_chapters) and has_chapters:
                     chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
@@ -1925,6 +1961,9 @@ def main():
                     chapters = entry_info.get("chapters")
                     has_chapters = isinstance(chapters, list) and len(chapters) > 0
                     video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
+                    global USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
+                    USER_SELECTED_VIDEO_CODEC = video_codec
+                    USER_SELECTED_AUDIO_CODEC = audio_codec
                     if video_id == "bestvideo+bestaudio/best":
                         quality_map = {
                             "0": ("bestvideo+bestaudio/best", "Максимальное"),
@@ -1945,11 +1984,17 @@ def main():
                     integrate_chapters = False
                     keep_chapter_file = False
                     chapter_filename = None
+                    global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_CHAPTER_FILENAME
+                    USER_INTEGRATE_CHAPTERS = integrate_chapters
+                    USER_KEEP_CHAPTER_FILE = keep_chapter_file
+                    USER_SELECTED_CHAPTER_FILENAME = chapter_filename
                     if has_chapters:
                         ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                         save_chapter_file = ask_chaps != "0"
                         log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
                     output_path = select_output_folder()
+                    global USER_SELECTED_OUTPUT_PATH
+                    USER_SELECTED_OUTPUT_PATH = output_path
                     if saved_list_path and os.path.isfile(saved_list_path):
                         try:
                             dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
@@ -1958,9 +2003,16 @@ def main():
                         except Exception as e:
                             print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
                     output_format = ask_output_format(desired_ext)
+                    global USER_SELECTED_OUTPUT_FORMAT
+                    USER_SELECTED_OUTPUT_FORMAT = output_format
                     integrate_subs = False
                     keep_sub_files = True
                     subs_to_integrate_langs = []
+                    global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
+                    USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
+                    USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
+                    USER_INTEGRATE_SUBS = integrate_subs
+                    USER_KEEP_SUB_FILES = keep_sub_files
                     if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
                         available_langs = subtitle_download_options['subtitleslangs']
                         print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
@@ -2046,6 +2098,9 @@ def main():
             chapters = info.get("chapters")
             has_chapters = isinstance(chapters, list) and len(chapters) > 0
             video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
+            global USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
+            USER_SELECTED_VIDEO_CODEC = video_codec
+            USER_SELECTED_AUDIO_CODEC = audio_codec
             if video_id == "bestvideo+bestaudio/best":
                 quality_map = {
                     "0": ("bestvideo+bestaudio/best", "Максимальное"),
@@ -2066,11 +2121,17 @@ def main():
             integrate_chapters = False
             keep_chapter_file = False
             chapter_filename = None
+            global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_CHAPTER_FILENAME
+            USER_INTEGRATE_CHAPTERS = integrate_chapters
+            USER_KEEP_CHAPTER_FILE = keep_chapter_file
+            USER_SELECTED_CHAPTER_FILENAME = chapter_filename
             if has_chapters:
                 ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                 save_chapter_file = ask_chaps != "0"
                 log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
             output_path = select_output_folder()
+            global USER_SELECTED_OUTPUT_PATH
+            USER_SELECTED_OUTPUT_PATH = output_path
             if saved_list_path and os.path.isfile(saved_list_path):
                 try:
                     dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
@@ -2079,9 +2140,16 @@ def main():
                 except Exception as e:
                     print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
             output_format = ask_output_format(desired_ext)
+            global USER_SELECTED_OUTPUT_FORMAT
+            USER_SELECTED_OUTPUT_FORMAT = output_format
             integrate_subs = False
             keep_sub_files = True
             subs_to_integrate_langs = []
+            global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
+            USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
+            USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
+            USER_INTEGRATE_SUBS = integrate_subs
+            USER_KEEP_SUB_FILES = keep_sub_files
             if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
                 available_langs = subtitle_download_options['subtitleslangs']
                 print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
@@ -2115,6 +2183,8 @@ def main():
             safe_title = re.sub(r'[<>:\"/\\\\|?*!]', '', default_title)
             log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
             output_name = ask_output_filename(safe_title, output_path, output_format)
+            global USER_SELECTED_OUTPUT_NAME
+            USER_SELECTED_OUTPUT_NAME = output_name            
             log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
             if (save_chapter_file or integrate_chapters) and has_chapters:
                 chapter_filename = os.path.normpath(os.path.join(output_path, output_name + ".ffmeta"))
@@ -2156,23 +2226,22 @@ def main():
 
             ok = check_mkv_integrity(
                 final_file,
-                expected_video_codec=expected_video_codec,
-                expected_audio_codec=expected_audio_codec,
-                expected_sub_langs=expected_sub_langs,
-                expected_chapters=expected_chapters
+                expected_video_codec=USER_SELECTED_VIDEO_CODEC,
+                expected_audio_codec=USER_SELECTED_AUDIO_CODEC,
+                expected_sub_langs=USER_SELECTED_SUB_LANGS if USER_INTEGRATE_SUBS else [],
+                expected_chapters=USER_INTEGRATE_CHAPTERS
             )
             if not ok:
                 log_debug("Файл MKV не соответствует выбранным опциям — запускаем принудительную интеграцию.")
                 print(Fore.YELLOW + "Файл MKV не содержит все выбранные дорожки. Запускается повторная интеграция..." + Style.RESET_ALL)
                 mux_mkv_with_subs_and_chapters(
-                    final_file, output_name, output_path,
-                    subs_to_integrate_langs, subtitle_download_options,
-                    integrate_subs, keep_sub_files,
-                    integrate_chapters, keep_chapter_file, chapter_filename
+                    final_file, USER_SELECTED_OUTPUT_NAME, USER_SELECTED_OUTPUT_PATH,
+                    USER_SELECTED_SUB_LANGS, {'subtitlesformat': USER_SELECTED_SUB_FORMAT},
+                    USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES,
+                    USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_CHAPTER_FILENAME
                 )
             else:
-                log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.")
- 
+                log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.") 
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
         log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
