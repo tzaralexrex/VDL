@@ -37,28 +37,7 @@ MAX_RETRIES = 15  # Максимум попыток повторной загр�
 
 CHECK_VER = 1  # 1 = проверять версии зависимостей, 0 = только наличие модулей
 
-# --- Автоимпорт и автоустановка requests и packaging ---
-def ensure_base_dependencies():
-    """
-    Проверяет и при необходимости устанавливает requests и packaging.
-    Импортирует их глобально для дальнейшего использования.
-    """
-
-    base_packages = ["requests", "packaging"]
-    for pkg in base_packages:
-        try:
-            importlib.import_module(pkg)
-        except ImportError:
-            print(f"[!] Необходимый модуль {pkg} не найден. Устанавливаем...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-    # Глобальный импорт
-    global requests, packaging, parse_version
-    import requests
-    import packaging
-    from packaging.version import parse as parse_version
-
-ensure_base_dependencies()
-
+# поддержка модуля importlib.metadata для Python <3.8
 try:
     from importlib.metadata import version as get_version, PackageNotFoundError
 except ImportError:
@@ -130,7 +109,10 @@ psutil = import_or_update('psutil')
 brotli = import_or_update('brotli')
 pycryptodomex = import_or_update('Cryptodome', 'pycryptodomex')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
+requests = import_or_update('requests')
+packaging = import_or_update('packaging')
 
+from packaging.version import parse as parse_version
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
 from colorama import init, Fore, Style
