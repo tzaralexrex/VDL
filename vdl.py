@@ -13,6 +13,7 @@ import platform
 import argparse
 import threading
 import shutil
+import importlib
 from pathlib import Path
 from datetime import datetime
 from shutil import which
@@ -56,6 +57,10 @@ try:
     from importlib.metadata import version as get_version, PackageNotFoundError
 except ImportError:
     from importlib_metadata import version as get_version, PackageNotFoundError  # type: ignore
+
+requests = importlib.import_module('requests')
+packaging = importlib.import_module('packaging')
+from packaging.version import parse as parse_version
 
 # --- Универсальный импорт и автообновление внешних модулей ---
 def import_or_update(module_name, pypi_name=None, min_version=None, force_check=False):
@@ -123,8 +128,6 @@ psutil = import_or_update('psutil')
 brotli = import_or_update('brotli')
 pycryptodomex = import_or_update('Cryptodome', 'pycryptodomex')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
-requests = import_or_update('requests')
-packaging = import_or_update('packaging')
 
 from packaging.version import parse as parse_version
 from yt_dlp.utils import DownloadError
