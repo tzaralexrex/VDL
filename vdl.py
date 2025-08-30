@@ -1676,23 +1676,17 @@ def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
         # Если это раздел/плейлист — раскрываем его
         if entry.get('_type') == 'playlist' or ('url' in entry and not entry.get('formats') and not entry.get('ie_key') == 'Youtube'):
             title = entry.get('title') or entry.get('id') or entry.get('url')
-            print(Fore.CYAN + f"{indent}→ Найден раздел/плейлист: {title}" + Style.RESET_ALL)
             url = entry.get('url') or entry.get('webpage_url')
             if url:
                 info = safe_get_video_info(url, platform)
                 subentries = info.get('entries', [])
-                if subentries:
-                    print(Fore.CYAN + f"{indent}  В разделе '{title}' найдено {len(subentries)} элементов." + Style.RESET_ALL)
+                print(Fore.MAGENTA + f"{indent}→ Найден раздел/плейлист: {title} ({len(subentries)} видео)" + Style.RESET_ALL)
                 expanded.extend(expand_channel_entries(subentries, platform, cookie_file_to_use, level=level+1))
         # Если это видео (url/id/title), но НЕ плейлист — просто добавляем, не раскрываем!
         elif entry.get('_type') == 'url' or ('url' in entry and not entry.get('_type')):
-            title = entry.get('title') or entry.get('id') or entry.get('url')
-            print(Fore.GREEN + f"{indent}  + Видео: {title}" + Style.RESET_ALL)
             expanded.append(entry)
         # Иногда yt-dlp возвращает видео с _type='video' (например, для одиночных видео)
         elif entry.get('_type') == 'video' or 'formats' in entry:
-            title = entry.get('title') or entry.get('id')
-            print(Fore.GREEN + f"{indent}  + Видео: {title}" + Style.RESET_ALL)
             expanded.append(entry)
     return expanded
 
