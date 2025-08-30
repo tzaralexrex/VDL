@@ -13,7 +13,7 @@ import platform
 import argparse
 import threading
 import shutil
-import importlib
+import msvcrt
 from pathlib import Path
 from datetime import datetime
 from shutil import which
@@ -129,7 +129,6 @@ brotli = import_or_update('brotli')
 pycryptodomex = import_or_update('Cryptodome', 'pycryptodomex')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
 
-from packaging.version import parse as parse_version
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
 from colorama import init, Fore, Style
@@ -846,7 +845,6 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
     # --- Копируем имя файла в буфер обмена Windows ---
     if platform.system().lower() == "windows":
         try:
-            import subprocess
             clipboard_text = f"{current_name}"
             # Используем UTF-16LE для корректной работы clip с кириллицей
             subprocess.run('clip', input=clipboard_text.encode('utf-16le'), check=True)
@@ -1206,7 +1204,6 @@ def download_video(
 
                     if part_file:
                         try:
-                            import psutil
                             for proc in psutil.process_iter(['pid', 'name']):
                                 try:
                                     for f in proc.open_files():
@@ -1531,6 +1528,55 @@ def mux_mkv_with_subs_and_chapters(
     except Exception as mux_err:
         print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
 
+def wait_keys(wait_only_enter, enter_pressed, timeout):
+    try:
+        start_time = time.time()
+        last_sec = -1
+        while True:
+            elapsed = time.time() - start_time
+            left = int(timeout - elapsed)
+            if not wait_only_enter[0] and left != last_sec and left >= 0:
+                print(f"\rОжидание... {left} сек. ", end='', flush=True)
+                last_sec = left
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch == '\r' or ch == '\n':
+                    print()
+                    enter_pressed[0] = True
+                    return
+                elif ch == ' ':
+                    wait_only_enter[0] = True
+                    print(Fore.CYAN + "\nПауза: нажмите Enter для продолжения..." + Style.RESET_ALL)
+                    while True:
+                        if msvcrt.kbhit():
+                            ch2 = msvcrt.getwch()
+                            if ch2 == '\r' or ch2 == '\n':
+                                print()
+                                enter_pressed[0] = True
+                                return
+                        time.sleep(0.05)
+            if not wait_only_enter[0] and elapsed >= timeout:
+                print()
+                return
+            time.sleep(0.05)
+    except ImportError:
+        # Fallback для других ОС: просто input с таймаутом
+        try:
+            input_thread = threading.Thread(target=input)
+            input_thread.daemon = True
+            input_thread.start()
+            for left in range(timeout, 0, -1):
+                print(f"\rОжидание... {left} сек. ", end='', flush=True)
+                input_thread.join(1)
+                if not input_thread.is_alive():
+                    print()
+                    enter_pressed[0] = True
+                    return
+            print()
+            return
+        except Exception:
+            return
+
 def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=None, auto_mode=False):
     """
     Выводит список видео плейлиста порциями по page_size.
@@ -1555,58 +1601,7 @@ def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT,
             wait_only_enter = [False]
             enter_pressed = [False]
 
-            def wait_keys():
-                try:
-                    import msvcrt
-                    import sys
-                    start_time = time.time()
-                    last_sec = -1
-                    while True:
-                        elapsed = time.time() - start_time
-                        left = int(timeout - elapsed)
-                        if not wait_only_enter[0] and left != last_sec and left >= 0:
-                            print(f"\rОжидание... {left} сек. ", end='', flush=True)
-                            last_sec = left
-                        if msvcrt.kbhit():
-                            ch = msvcrt.getwch()
-                            if ch == '\r' or ch == '\n':
-                                print()
-                                enter_pressed[0] = True
-                                return
-                            elif ch == ' ':
-                                wait_only_enter[0] = True
-                                print(Fore.CYAN + "\nПауза: нажмите Enter для продолжения..." + Style.RESET_ALL)
-                                while True:
-                                    if msvcrt.kbhit():
-                                        ch2 = msvcrt.getwch()
-                                        if ch2 == '\r' or ch2 == '\n':
-                                            print()
-                                            enter_pressed[0] = True
-                                            return
-                                    time.sleep(0.05)
-                        if not wait_only_enter[0] and elapsed >= timeout:
-                            print()
-                            return
-                        time.sleep(0.05)
-                except ImportError:
-                    # Fallback для других ОС: просто input с таймаутом
-                    try:
-                        input_thread = threading.Thread(target=input)
-                        input_thread.daemon = True
-                        input_thread.start()
-                        for left in range(timeout, 0, -1):
-                            print(f"\rОжидание... {left} сек. ", end='', flush=True)
-                            input_thread.join(1)
-                            if not input_thread.is_alive():
-                                print()
-                                enter_pressed[0] = True
-                                return
-                        print()
-                        return
-                    except Exception:
-                        return
-
-            wait_keys()
+            wait_keys(wait_only_enter, enter_pressed, timeout)
     # --- После полного вывода ---
     if playlist_title:
         default_filename = f"{playlist_title}.txt"
@@ -1690,6 +1685,166 @@ def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
             expanded.append(entry)
     return expanded
 
+def has_nested_playlists(pls):
+    return any(pl.get("sub_playlists") for pl in pls)
+
+def collect_playlists(entries, platform, cookie_file_to_use, level=0):
+    """
+    Рекурсивно строит структуру: [{title, videos, sub_playlists}]
+    В корне возвращает только настоящие плейлисты (разделы).
+    Видео, не входящие ни в один плейлист, собираются в отдельный плейлист "Без раздела".
+    Не дублирует "Без раздела", если все видео уже входят в плейлисты.
+    """
+    playlists = []
+    videos = []
+    playlist_entries = [e for e in entries if e.get('_type') == 'playlist']
+    video_entries = [e for e in entries if e.get('_type') in ('url', 'video') or ('url' in e and not e.get('_type'))]
+
+    for entry in playlist_entries:
+        title = entry.get('title') or entry.get('id') or entry.get('url')
+        url = entry.get('url') or entry.get('webpage_url')
+        info = safe_get_video_info(url, platform)
+        subentries = info.get('entries', [])
+        sub_playlists = collect_playlists(subentries, platform, cookie_file_to_use, level=level+1)
+        # Собираем все видео из subentries, которые не являются плейлистами
+        sub_videos = [e for e in subentries if e.get('_type') in ('url', 'video') or ('url' in e and not e.get('_type'))]
+        # --- Ключевой момент: если внутри только видео и нет других плейлистов, не добавлять "Без раздела"
+        only_videos = len(subentries) == len(sub_videos)
+        if only_videos:
+            playlists.append({
+                "title": title,
+                "videos": sub_videos,
+                "sub_playlists": []
+            })
+        else:
+            playlists.append({
+                "title": title,
+                "videos": [],
+                "sub_playlists": sub_playlists
+            })
+
+    # На этом уровне — если есть видео вне плейлистов, добавляем "Без раздела"
+    if video_entries:
+        playlists.append({
+            "title": "Без раздела",
+            "videos": video_entries,
+            "sub_playlists": []
+        })
+    return playlists
+
+def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path=""):
+    for pl in playlists:
+        pl_title = pl["title"] or "playlist"
+        folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
+        if pl["videos"]:
+            print(Fore.CYAN + f"\nПлейлист: {pl_title} ({len(pl['videos'])} видео)" + Style.RESET_ALL)
+            saved_list_path = print_playlist_paginated(pl["videos"], page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=pl_title)
+            if saved_list_path and os.path.isfile(saved_list_path):
+                try:
+                    dest_path = os.path.join(folder, os.path.basename(saved_list_path))
+                    os.makedirs(folder, exist_ok=True)
+                    shutil.move(saved_list_path, dest_path)
+                    print(Fore.GREEN + f"Список видео перемещён в папку плейлиста: {dest_path}" + Style.RESET_ALL)
+                except Exception as e:
+                    print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
+            print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
+            sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
+            selected_indexes = parse_selection(sel, len(pl["videos"]))
+            selected_indexes = sorted(selected_indexes)
+            if not selected_indexes:
+                print(Fore.YELLOW + "Не выбрано ни одного видео. Пропуск плейлиста." + Style.RESET_ALL)
+                continue
+            print(Fore.GREEN + f"Будут скачаны видео: {', '.join(str(i) for i in selected_indexes)}" + Style.RESET_ALL)
+            log_debug(f"Выбраны номера видео для скачивания из '{pl_title}': {selected_indexes}")
+
+            # --- Новый блок: выбор ручной/автоматический режим для этого подплейлиста ---
+            cmdline_auto_mode = auto_mode
+            local_auto_mode = cmdline_auto_mode
+            if not cmdline_auto_mode:
+                user_auto = input(Fore.CYAN + "\nВыбрать параметры вручную для каждого видео? (1 — вручную, 0 — автоматически, Enter = 0): " + Style.RESET_ALL).strip()
+                local_auto_mode = False if user_auto == '1' else True
+
+            if local_auto_mode:
+                first_idx = selected_indexes[0]
+                entry = pl["videos"][first_idx - 1]
+                entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                if not entry_url:
+                    print(Fore.RED + f"Не удалось получить ссылку для первого видео. Пропуск." + Style.RESET_ALL)
+                    continue
+                print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
+                entry_info = safe_get_video_info(entry_url, platform)
+                video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
+                subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
+                output_format = ask_output_format(desired_ext, auto_mode=False)
+                # Можно добавить обработку глав и субтитров, если нужно
+
+                for idx in selected_indexes:
+                    entry = pl["videos"][idx - 1]
+                    entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                    if not entry_url:
+                        print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
+                        continue
+                    print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' (автоматический режим) ===" + Style.RESET_ALL)
+                    try:
+                        entry_info = safe_get_video_info(entry_url, platform)
+                        video_fmt_auto = find_by_format_id(entry_info['formats'], video_id, is_video=True)
+                        audio_fmt_auto = find_by_format_id(entry_info['formats'], audio_id, is_video=False) if audio_id else None
+                        if not video_fmt_auto:
+                            video_fmt_auto = find_best_video(entry_info['formats'], video_ext)
+                        if audio_id and not audio_fmt_auto:
+                            audio_fmt_auto = find_best_audio(entry_info['formats'], audio_ext)
+                        video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
+                        audio_id_auto = audio_fmt_auto.get('format_id') if audio_fmt_auto else None
+                        default_title = entry_info.get('title', f'video_{idx}')
+                        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                        output_name = get_unique_filename(safe_title, folder, output_format)
+                        downloaded_file = download_video(
+                            entry_url, video_id_auto, audio_id_auto, folder, output_name, output_format,
+                            platform, cookie_file_to_use, subtitle_options=subtitle_download_options
+                        )
+                        if downloaded_file:
+                            print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+                        else:
+                            print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
+                    except Exception as e:
+                        print(f"\n{Fore.RED}Ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+            else:
+                # --- Ручной режим: параметры для каждого видео ---
+                for idx in selected_indexes:
+                    entry = pl["videos"][idx - 1]
+                    entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                    if not entry_url:
+                        print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
+                        continue
+                    print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' ===" + Style.RESET_ALL)
+                    try:
+                        entry_info = safe_get_video_info(entry_url, platform)
+                        video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
+                        subtitle_download_options = ask_and_select_subtitles(entry_info)
+                        output_format = ask_output_format(desired_ext)
+                        default_title = entry_info.get('title', f'video_{idx}')
+                        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                        output_name = get_unique_filename(safe_title, folder, output_format)
+                        downloaded_file = download_video(
+                            entry_url, video_id, audio_id, folder, output_name, output_format,
+                            platform, cookie_file_to_use, subtitle_options=subtitle_download_options
+                        )
+                        if downloaded_file:
+                            print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+                        else:
+                            print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
+                    except Exception as e:
+                        print(f"\n{Fore.RED}Ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+        if pl["sub_playlists"]:
+            process_playlists(pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title))
+
+def print_playlists_tree(playlists, level=0):
+    for pl in playlists:
+        indent = "  " * level
+        print(f"{indent}- {pl['title'] or 'Без названия'} ({len(pl['videos'])} видео)")
+        if pl["sub_playlists"]:
+            print_playlists_tree(pl["sub_playlists"], level+1)
+
 def main():
     global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
     global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
@@ -1751,18 +1906,38 @@ def main():
         # --- Обработка плейлиста ---
         if info.get('_type') == 'playlist' or 'entries' in info:
             entries = info.get('entries', [])
-            # --- Раскрытие разделов канала ---
-            entries = expand_channel_entries(entries, platform, cookie_file_to_use)
-            print(Fore.YELLOW + f"\nВсего найдено видео: {len(entries)}" + Style.RESET_ALL)
-            if not entries:
-                print(Fore.RED + "В канале не найдено ни одного видео." + Style.RESET_ALL)
-                return
-            print(Fore.YELLOW + f"\nОбнаружен плейлист! Количество видео: {len(entries)}" + Style.RESET_ALL)
-            log_debug(f"Обнаружен плейлист. Количество видео: {len(entries)}")
-            playlist_title = info.get('title') or "playlist"
-            saved_list_path = print_playlist_paginated(entries, page_size=20, timeout=10, playlist_title=playlist_title)
+            # --- Строим структуру плейлистов ---
+            print(Fore.YELLOW + "\nАнализируем структуру канала/плейлиста, ищем вложенные плейлисты..." + Style.RESET_ALL)
+            playlists_struct = collect_playlists(info.get('entries', []), platform, cookie_file_to_use)
 
-            # --- Новый блок: спрашиваем про добавление индекса к имени файла ---
+            if not has_nested_playlists(playlists_struct) and len(playlists_struct) == 1:
+                # Нет вложенных плейлистов, обычный режим
+                all_videos = []
+                for pl in playlists_struct:
+                    all_videos.extend(pl["videos"])
+                print(Fore.YELLOW + f"\nВсего найдено видео: {len(all_videos)}" + Style.RESET_ALL)
+                if not all_videos:
+                    print(Fore.RED + "В канале не найдено ни одного видео." + Style.RESET_ALL)
+                    return
+                playlist_title = info.get('title') or "playlist"
+                saved_list_path = print_playlist_paginated(all_videos, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=playlist_title)
+                # Используй all_videos вместо entries!
+                entries = all_videos
+            else:
+                # Есть вложенные плейлисты
+                print(Fore.YELLOW + "\nОбнаружены вложенные плейлисты! Будет произведён обход по каждому из них." + Style.RESET_ALL)
+                output_path = select_output_folder(auto_mode=False)
+                USER_SELECTED_OUTPUT_PATH = output_path
+
+                # Выводим список всех плейлистов с количеством видео
+                print(Fore.YELLOW + "\nНайдены вложенные плейлисты:" + Style.RESET_ALL)
+
+                print_playlists_tree(playlists_struct)
+
+                process_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
+                print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
+                return
+            # --- Спрашиваем про добавление индекса к имени файла ---
             add_index_prefix = True
             answer = input(Fore.CYAN + "\nДобавлять номер видео в начале имени файла? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
             if answer == "0":
@@ -2202,7 +2377,7 @@ def main():
                 integrate_chapters = ask_chaps != "0"
                 log_debug(f"Пользователь выбрал интеграцию глав: {integrate_chapters}")
             default_title = info.get('title', 'video')
-            safe_title = re.sub(r'[<>:\"/\\\\|?*!]', '', default_title)
+            safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
             log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
             output_name = ask_output_filename(safe_title, output_path, output_format)
             USER_SELECTED_OUTPUT_NAME = output_name            
