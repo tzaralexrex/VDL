@@ -1854,7 +1854,16 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
         folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
+        add_index_prefix = True
         if pl["videos"]:
+            # --- Новый блок: спрашиваем про добавление номера видео ---
+            answer = input(
+                Fore.CYAN + f"\nДобавлять номер видео в начале имени файла для плейлиста '{pl_title}'? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL
+            ).strip()
+            if answer == "0":
+                add_index_prefix = False
+            log_debug(f"add_index_prefix для плейлиста '{pl_title}' = {add_index_prefix}")
+
             print(Fore.CYAN + f"\nПлейлист: {pl_title} ({len(pl['videos'])} видео)" + Style.RESET_ALL)
             saved_list_path = print_playlist_paginated(pl["videos"], page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=pl_title)
             if saved_list_path and os.path.isfile(saved_list_path):
@@ -1899,6 +1908,11 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                         # Для всех выбранных видео — сохраняем параметры
                         for idx in selected_indexes:
                             entry = pl["videos"][idx - 1]
+                            # --- Формируем имя с префиксом, если нужно ---
+                            default_title = entry.get('title', f'video_{idx}')
+                            safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                            if add_index_prefix:
+                                safe_title = f"{idx:02d} {safe_title}"
                             tasks.append({
                                 "folder": folder,
                                 "entry": entry,
@@ -1908,7 +1922,9 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                                 "subtitle_options": subtitle_download_options,
                                 "platform": platform,
                                 "cookie_file_to_use": cookie_file_to_use,
-                                # можно добавить другие параметры
+                                "add_index_prefix": add_index_prefix,
+                                "index_number": idx,
+                                "safe_title": safe_title,
                             })
                 else:
                     # Ручной режим: параметры для каждого видео
@@ -1923,6 +1939,10 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         subtitle_download_options = ask_and_select_subtitles(entry_info)
                         output_format = ask_output_format(desired_ext)
+                        default_title = entry.get('title', f'video_{idx}')
+                        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                        if add_index_prefix:
+                            safe_title = f"{idx:02d} {safe_title}"
                         tasks.append({
                             "folder": folder,
                             "entry": entry,
@@ -1932,6 +1952,9 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                             "subtitle_options": subtitle_download_options,
                             "platform": platform,
                             "cookie_file_to_use": cookie_file_to_use,
+                            "add_index_prefix": add_index_prefix,
+                            "index_number": idx,
+                            "safe_title": safe_title,
                         })
         # Рекурсивно для подплейлистов
         if pl["sub_playlists"]:
@@ -1948,10 +1971,14 @@ def download_tasks(tasks):
         if not entry_url:
             print(Fore.RED + "Не удалось получить ссылку для видео. Пропуск." + Style.RESET_ALL)
             continue
-        entry_info = safe_get_video_info(entry_url, task["platform"])
-        default_title = entry_info.get('title', 'video')
-        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
-        output_name = get_unique_filename(safe_title, task["folder"], task["output_format"])
+        # --- Используем safe_title из task, если есть ---
+        if "safe_title" in task:
+            output_name = get_unique_filename(task["safe_title"], task["folder"], task["output_format"])
+        else:
+            entry_info = safe_get_video_info(entry_url, task["platform"])
+            default_title = entry_info.get('title', 'video')
+            safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+            output_name = get_unique_filename(safe_title, task["folder"], task["output_format"])
         downloaded_file = download_video(
             entry_url, task["video_id"], task["audio_id"], task["folder"], output_name, task["output_format"],
             task["platform"], task["cookie_file_to_use"], subtitle_options=task["subtitle_options"]
