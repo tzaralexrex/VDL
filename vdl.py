@@ -1912,11 +1912,14 @@ def print_playlists_tree(playlists, level=0):
         if pl["sub_playlists"]:
             print_playlists_tree(pl["sub_playlists"], level+1)
 
-def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path=""):
+def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path="", selected_video_ids=None):
     """
     Рекурсивно собирает пользовательские выборы по всем плейлистам.
     Возвращает список задач на скачивание: [{folder, entry, параметры...}]
     """
+    if selected_video_ids is None:
+        selected_video_ids = {}
+
     tasks = []
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
@@ -1924,7 +1927,6 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
         folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
         add_index_prefix = True
         if pl["videos"]:
-            # --- Новый блок: спрашиваем про добавление номера видео ---
             answer = input(
                 Fore.CYAN + f"\nДобавлять номер видео в начале имени файла для плейлиста '{pl_title}'? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL
             ).strip()
@@ -1958,7 +1960,6 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                     user_auto = input(Fore.CYAN + "\nВыбрать параметры вручную для каждого видео? (1 — вручную, 0 — автоматически, Enter = 0): " + Style.RESET_ALL).strip()
                     local_auto_mode = False if user_auto == '1' else True
 
-                # Сбор параметров для первого видео (если auto)
                 if local_auto_mode:
                     first_idx = selected_indexes[0]
                     entry = pl["videos"][first_idx - 1]
@@ -1983,14 +1984,21 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                             log_debug(f"Ошибка при скачивании видео {first_idx}: {e}\n{traceback.format_exc()}")
                             continue
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
-                        ...
                         subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
                         output_format = ask_output_format(desired_ext, auto_mode=False)
                         # Можно добавить обработку глав и субтитров, если нужно
 
-                        # Для всех выбранных видео — сохраняем параметры
                         for idx in selected_indexes:
                             entry = pl["videos"][idx - 1]
+                            entry_id = entry.get('id') or entry.get('url') or entry.get('webpage_url')
+                            if entry_id in selected_video_ids:
+                                prev_pl = selected_video_ids[entry_id]
+                                print(Fore.YELLOW + f"\nВидео '{entry.get('title', entry_id)}' уже выбрано для скачивания в плейлисте '{prev_pl}'.")
+                                ans = input(Fore.CYAN + "Скачать ещё раз? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                                if ans != "1":
+                                    print(Fore.YELLOW + "Пропуск этого видео." + Style.RESET_ALL)
+                                    continue
+                            selected_video_ids[entry_id] = pl_title
                             # --- Формируем имя с префиксом, если нужно ---
                             default_title = entry.get('title', f'video_{idx}')
                             safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
@@ -2013,6 +2021,15 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                     # Ручной режим: параметры для каждого видео
                     for idx in selected_indexes:
                         entry = pl["videos"][idx - 1]
+                        entry_id = entry.get('id') or entry.get('url') or entry.get('webpage_url')
+                        if entry_id in selected_video_ids:
+                            prev_pl = selected_video_ids[entry_id]
+                            print(Fore.YELLOW + f"\nВидео '{entry.get('title', entry_id)}' уже выбрано для скачивания в плейлисте '{prev_pl}'.")
+                            ans = input(Fore.CYAN + "Скачать ещё раз? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                            if ans != "1":
+                                print(Fore.YELLOW + "Пропуск этого видео." + Style.RESET_ALL)
+                                continue
+                        selected_video_ids[entry_id] = pl_title
                         entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
                         if not entry_url:
                             print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
@@ -2041,7 +2058,9 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                         })
         # Рекурсивно для подплейлистов
         if pl["sub_playlists"]:
-            tasks.extend(collect_user_choices_for_playlists(pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title)))
+            tasks.extend(collect_user_choices_for_playlists(
+                pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title), selected_video_ids
+            ))
     return tasks
 
 def download_tasks(tasks):
@@ -2240,7 +2259,7 @@ def main():
                 USER_SELECTED_OUTPUT_PATH = output_path
                 print(Fore.YELLOW + "\nНайдены плейлисты:" + Style.RESET_ALL)
                 print_playlists_tree(playlists_struct)
-                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
+                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
                 print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
                 download_tasks(tasks)
                 print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
@@ -2275,7 +2294,7 @@ def main():
 
                 # process_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
                 # --- Новый порядок: сначала собираем все задачи, потом скачиваем ---
-                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
+                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
                 print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
                 download_tasks(tasks)
                 print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
