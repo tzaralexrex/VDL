@@ -1735,6 +1735,7 @@ def collect_playlists(entries, platform, cookie_file_to_use, level=0):
 def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path=""):
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
+        print(Fore.MAGENTA + f"\nНачало обработки плейлиста: {pl_title}" + Style.RESET_ALL)        
         folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
         if pl["videos"]:
             print(Fore.CYAN + f"\nПлейлист: {pl_title} ({len(pl['videos'])} видео)" + Style.RESET_ALL)
@@ -1853,6 +1854,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
     tasks = []
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
+        print(Fore.MAGENTA + f"\nНачало обработки плейлиста: {pl_title}" + Style.RESET_ALL)        
         folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
         add_index_prefix = True
         if pl["videos"]:
@@ -1971,16 +1973,58 @@ def download_tasks(tasks):
         if not entry_url:
             print(Fore.RED + "Не удалось получить ссылку для видео. Пропуск." + Style.RESET_ALL)
             continue
+
+        # Получаем info для текущего видео
+        entry_info = safe_get_video_info(entry_url, task["platform"])
+        formats = entry_info.get('formats', [])
+
+        # --- Fallback-поиск формата, если выбранный не найден ---
+        video_id = task["video_id"]
+        audio_id = task["audio_id"]
+        video_ext = None
+        audio_ext = None
+
+        # Ищем видеоформат по format_id
+        video_fmt = find_by_format_id(formats, video_id, is_video=True)
+        if not video_fmt:
+            # Если не найден — ищем лучший совместимый
+            video_fmt = find_best_video(formats, task["output_format"])
+            if video_fmt:
+                print(Fore.YELLOW + f"Для видео '{entry_info.get('title', entry_url)}' не найден выбранный формат ({video_id}), выбран ближайший: {video_fmt.get('format_id')}" + Style.RESET_ALL)
+                log_debug(f"Fallback: не найден видеоформат {video_id}, выбран {video_fmt.get('format_id')}")
+            else:
+                print(Fore.RED + f"Не найден подходящий видеоформат для '{entry_info.get('title', entry_url)}'. Пропуск." + Style.RESET_ALL)
+                log_debug(f"Не найден подходящий видеоформат для {entry_url}")
+                continue
+        video_id_final = video_fmt.get('format_id')
+        video_ext = video_fmt.get('ext', '')
+
+        # Аналогично для аудио
+        audio_fmt = None
+        audio_id_final = None
+        if audio_id:
+            audio_fmt = find_by_format_id(formats, audio_id, is_video=False)
+            if not audio_fmt:
+                audio_fmt = find_best_audio(formats, task["output_format"])
+                if audio_fmt:
+                    print(Fore.YELLOW + f"Для видео '{entry_info.get('title', entry_url)}' не найден выбранный аудиоформат ({audio_id}), выбран ближайший: {audio_fmt.get('format_id')}" + Style.RESET_ALL)
+                    log_debug(f"Fallback: не найден аудиоформат {audio_id}, выбран {audio_fmt.get('format_id')}")
+                else:
+                    print(Fore.YELLOW + f"Не найден подходящий аудиоформат для '{entry_info.get('title', entry_url)}'. Будет использован звук из видео." + Style.RESET_ALL)
+            if audio_fmt:
+                audio_id_final = audio_fmt.get('format_id')
+                audio_ext = audio_fmt.get('ext', '')
+
         # --- Используем safe_title из task, если есть ---
         if "safe_title" in task:
             output_name = get_unique_filename(task["safe_title"], task["folder"], task["output_format"])
         else:
-            entry_info = safe_get_video_info(entry_url, task["platform"])
             default_title = entry_info.get('title', 'video')
             safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
             output_name = get_unique_filename(safe_title, task["folder"], task["output_format"])
+
         downloaded_file = download_video(
-            entry_url, task["video_id"], task["audio_id"], task["folder"], output_name, task["output_format"],
+            entry_url, video_id_final, audio_id_final, task["folder"], output_name, task["output_format"],
             task["platform"], task["cookie_file_to_use"], subtitle_options=task["subtitle_options"]
         )
         if downloaded_file:
@@ -2080,7 +2124,7 @@ def main():
                 # process_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
                 # --- Новый порядок: сначала собираем все задачи, потом скачиваем ---
                 tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
-                print(Fore.CYAN + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
+                print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
                 download_tasks(tasks)
                 print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
                 return
