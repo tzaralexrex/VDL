@@ -146,8 +146,8 @@ debug_file_initialized = False
 
 def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
     """
-    Быстро проверяет, «жив» ли куки-файл.
-    Для YouTube берём главную страницу, для Facebook — тоже.
+    Быстро проверяет, «жив» ли куки-файл.
+    Для YouTube берём главную страницу, для Facebook — тоже.
     Возвращает True, если запрос прошёл без ошибки авторизации.
     """
     test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
@@ -365,6 +365,18 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
             info['__cookiefile__'] = cookie_file_path
         return info
 
+def is_video_unavailable_error(err):
+    """
+    Проверяет, относится ли ошибка к недоступности видео (премьера, удалено, скрыто и т.п.)
+    """
+    err_text = str(err).lower()
+    return any(x in err_text for x in [
+        "premiere", "not yet available", "is unavailable", "is private", "is scheduled",
+        "video unavailable", "this video is unavailable", "this video is private",
+        "this video is scheduled", "this video is not yet available", "has been removed",
+        "has been deleted", "is no longer available"
+    ])
+
 def safe_get_video_info(url: str, platform: str):
     cookie_map = {
         "youtube":  COOKIES_YT,
@@ -402,7 +414,7 @@ def safe_get_video_info(url: str, platform: str):
                             continue
                     print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
                           f"Сохраните их вручную и положите файл сюда: {cookie_path}\n")
-                    sys.exit(1)
+                    raise DownloadError("Видео требует авторизации, а получить рабочие куки автоматически не удалось. Пропуск.")
 
     else:
         # ----- generic -----
@@ -453,7 +465,7 @@ def safe_get_video_info(url: str, platform: str):
             f"Если ничего не помогло, возможно, ваш сайт просто не поддерживается. Извините.\n"
         )
     log_debug(f"generic: авторизация не удалась даже с cookies.txt для {site_domain}")
-    sys.exit(1)
+    raise DownloadError(f"Не удалось получить рабочие куки для сайта {site_domain}, видео пропущено.")
 
 
 def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
@@ -582,7 +594,7 @@ def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
             ext    = f.get("ext", "?")
             abr    = f.get("abr") or "?"
             acodec = f.get("acodec", "?")
-            print(f"{i}: {fmt_id}  –  {ext}  –  {abr} kbps  –  {acodec}")
+            print(f"{i}: {fmt_id}  –  {ext}  –  {abr} kbps  –  {acodec}")
 
         # --- таблица совместимости контейнер/аудио-расширения ---
         compat = {
@@ -1056,7 +1068,7 @@ def download_video(
     last_file = [None]
     ydl_opts['progress_hooks'] = [lambda d: phook(d, last_file)]
  
-    # ---------------- 4. Загрузка с повторами --------------------------
+    # ---------------- 4. Загрузка с повторами --------------------------
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log_debug(f"Запуск yt-dlp, попытка {attempt}/{MAX_RETRIES}: {ydl_opts}")
@@ -1243,7 +1255,7 @@ def download_video(
                         cookie_file_path = new_cookie_file
                         ydl_opts['cookiefile'] = cookie_file_path
                         log_debug(f"Перед повтором обновили cookiefile: {cookie_file_path}")
-                print(Fore.YELLOW + f"Обрыв загрузки (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
+                print(Fore.YELLOW + f"Обрыв загрузки (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
                 time.sleep(5)
                 continue
             else:
@@ -1585,6 +1597,7 @@ def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT,
     После полного вывода спрашивает, сохранить ли список в файл.
     Возвращает путь к сохранённому файлу списка (или None).
     """
+    log_debug(f"print_playlist_paginated: entries_count={len(entries)}, title={playlist_title}")
     total = len(entries)
     all_lines = []
     saved_list_path = None
@@ -1691,29 +1704,38 @@ def has_nested_playlists(pls):
 def collect_playlists(entries, platform, cookie_file_to_use, level=0):
     """
     Рекурсивно строит структуру: [{title, videos, sub_playlists}]
-    В корне возвращает только настоящие плейлисты (разделы).
-    Видео, не входящие ни в один плейлист, собираются в отдельный плейлист "Без раздела".
-    Не дублирует "Без раздела", если все видео уже входят в плейлисты.
+    Корректно различает настоящие видео и плейлисты для YouTube /playlists.
     """
+    log_debug(f"collect_playlists: level={level}, entries_count={len(entries)}")
     playlists = []
     videos = []
-    playlist_entries = [e for e in entries if e.get('_type') == 'playlist']
-    video_entries = [e for e in entries if e.get('_type') in ('url', 'video') or ('url' in e and not e.get('_type'))]
+    playlist_entries = []
+    video_entries = []
+
+    for e in entries:
+        # Если это плейлист (YouTube: _type=url и url содержит playlist?list=...)
+        if (e.get('_type') == 'playlist' or
+            (e.get('_type') == 'url' and 'playlist?list=' in (e.get('url') or ''))):
+            playlist_entries.append(e)
+        # Если это видео
+        elif e.get('_type') in ('url', 'video') or ('formats' in e):
+            video_entries.append(e)
 
     for entry in playlist_entries:
         title = entry.get('title') or entry.get('id') or entry.get('url')
         url = entry.get('url') or entry.get('webpage_url')
         info = safe_get_video_info(url, platform)
         subentries = info.get('entries', [])
-        sub_playlists = collect_playlists(subentries, platform, cookie_file_to_use, level=level+1)
-        # Собираем все видео из subentries, которые не являются плейлистами
-        sub_videos = [e for e in subentries if e.get('_type') in ('url', 'video') or ('url' in e and not e.get('_type'))]
-        # --- Ключевой момент: если внутри только видео и нет других плейлистов, не добавлять "Без раздела"
-        only_videos = len(subentries) == len(sub_videos)
+        log_debug(f"collect_playlists: subentries для '{title}' (count={len(subentries)})")
+        # Разделяем вложенные плейлисты и видео
+        sub_playlist_entries = [e for e in subentries if (e.get('_type') == 'playlist' or (e.get('_type') == 'url' and 'playlist?list=' in (e.get('url') or '')))]
+        sub_video_entries = [e for e in subentries if e.get('_type') in ('url', 'video') or ('formats' in e)]
+        sub_playlists = collect_playlists(subentries, platform, cookie_file_to_use, level=level+1) if sub_playlist_entries else []
+        only_videos = len(subentries) == len(sub_video_entries)
         if only_videos:
             playlists.append({
                 "title": title,
-                "videos": sub_videos,
+                "videos": sub_video_entries,
                 "sub_playlists": []
             })
         else:
@@ -1723,13 +1745,13 @@ def collect_playlists(entries, platform, cookie_file_to_use, level=0):
                 "sub_playlists": sub_playlists
             })
 
-    # На этом уровне — если есть видео вне плейлистов, добавляем "Без раздела"
     if video_entries:
         playlists.append({
             "title": "Без раздела",
             "videos": video_entries,
             "sub_playlists": []
         })
+    log_debug(f"collect_playlists: playlists на уровне {level}: {str(playlists)[:500]}")
     return playlists
 
 def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path=""):
@@ -1773,7 +1795,22 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                     print(Fore.RED + f"Не удалось получить ссылку для первого видео. Пропуск." + Style.RESET_ALL)
                     continue
                 print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
-                entry_info = safe_get_video_info(entry_url, platform)
+                try:
+                    entry_info = safe_get_video_info(entry_url, platform)
+                except DownloadError as e:
+                    if is_video_unavailable_error(e):
+                        print(Fore.YELLOW + f"Видео {first_idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                        log_debug(f"Видео {first_idx} недоступно: {e}")
+                        continue
+                    else:
+                        print(f"\n{Fore.RED}Ошибка загрузки видео {first_idx}: {e}{Style.RESET_ALL}")
+                        log_debug(f"Ошибка загрузки видео {first_idx}: {e}")
+                        continue
+                except Exception as e:
+                    print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {first_idx}: {e}{Style.RESET_ALL}")
+                    log_debug(f"Ошибка при скачивании видео {first_idx}: {e}\n{traceback.format_exc()}")
+                    continue
+
                 video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
                 subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
                 output_format = ask_output_format(desired_ext, auto_mode=False)
@@ -1787,7 +1824,21 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                         continue
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' (автоматический режим) ===" + Style.RESET_ALL)
                     try:
-                        entry_info = safe_get_video_info(entry_url, platform)
+                        try:
+                            entry_info = safe_get_video_info(entry_url, platform)
+                        except DownloadError as e:
+                            if is_video_unavailable_error(e):
+                                print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                                log_debug(f"Видео {idx} недоступно: {e}")
+                                continue
+                            else:
+                                print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                                log_debug(f"Ошибка загрузки видео {idx}: {e}")
+                                continue
+                        except Exception as e:
+                            print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+                            log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
+                            continue
                         video_fmt_auto = find_by_format_id(entry_info['formats'], video_id, is_video=True)
                         audio_fmt_auto = find_by_format_id(entry_info['formats'], audio_id, is_video=False) if audio_id else None
                         if not video_fmt_auto:
@@ -1819,7 +1870,21 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                         continue
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' ===" + Style.RESET_ALL)
                     try:
-                        entry_info = safe_get_video_info(entry_url, platform)
+                        try:
+                            entry_info = safe_get_video_info(entry_url, platform)
+                        except DownloadError as e:
+                            if is_video_unavailable_error(e):
+                                print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                                log_debug(f"Видео {idx} недоступно: {e}")
+                                continue
+                            else:
+                                print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                                log_debug(f"Ошибка загрузки видео {idx}: {e}")
+                                continue
+                        except Exception as e:
+                            print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+                            log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
+                            continue
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         subtitle_download_options = ask_and_select_subtitles(entry_info)
                         output_format = ask_output_format(desired_ext)
@@ -1840,6 +1905,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
             process_playlists(pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title))
 
 def print_playlists_tree(playlists, level=0):
+    log_debug(f"print_playlists_tree: level={level}, playlists_count={len(playlists)}")
     for pl in playlists:
         indent = "  " * level
         print(f"{indent}- {pl['title'] or 'Без названия'} ({len(pl['videos'])} видео)")
@@ -1901,8 +1967,23 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                         print(Fore.RED + f"Не удалось получить ссылку для первого видео. Пропуск." + Style.RESET_ALL)
                     else:
                         print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
-                        entry_info = safe_get_video_info(entry_url, platform)
+                        try:
+                            entry_info = safe_get_video_info(entry_url, platform)
+                        except DownloadError as e:
+                            if is_video_unavailable_error(e):
+                                print(Fore.YELLOW + f"Видео {first_idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                                log_debug(f"Видео {first_idx} недоступно: {e}")
+                                continue
+                            else:
+                                print(f"\n{Fore.RED}Ошибка загрузки видео {first_idx}: {e}{Style.RESET_ALL}")
+                                log_debug(f"Ошибка загрузки видео {first_idx}: {e}")
+                                continue
+                        except Exception as e:
+                            print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {first_idx}: {e}{Style.RESET_ALL}")
+                            log_debug(f"Ошибка при скачивании видео {first_idx}: {e}\n{traceback.format_exc()}")
+                            continue
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
+                        ...
                         subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
                         output_format = ask_output_format(desired_ext, auto_mode=False)
                         # Можно добавить обработку глав и субтитров, если нужно
@@ -1975,7 +2056,22 @@ def download_tasks(tasks):
             continue
 
         # Получаем info для текущего видео
-        entry_info = safe_get_video_info(entry_url, task["platform"])
+        try:
+            entry_info = safe_get_video_info(entry_url, task["platform"])
+        except DownloadError as e:
+            if is_video_unavailable_error(e):
+                print(Fore.YELLOW + f"Видео недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                log_debug(f"Видео недоступно: {e}")
+                continue
+            else:
+                print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
+                log_debug(f"Ошибка загрузки видео: {e}")
+                continue
+        except Exception as e:
+            print(Fore.RED + f"Непредвидённая ошибка при скачивании видео: {e}" + Style.RESET_ALL)
+            log_debug(f"Ошибка при скачивании видео: {e}\n{traceback.format_exc()}")
+            continue
+
         formats = entry_info.get('formats', [])
 
         # --- Fallback-поиск формата, если выбранный не найден ---
@@ -2032,6 +2128,33 @@ def download_tasks(tasks):
         else:
             print(Fore.RED + f"Ошибка при скачивании видео." + Style.RESET_ALL)
 
+def is_youtube_channel_url(url: str) -> bool:
+    """
+    Проверяет, является ли ссылка ссылкой на канал YouTube (не на видео, не на плейлист).
+    """
+    # https://www.youtube.com/@username
+    # https://www.youtube.com/channel/UC...
+    # https://www.youtube.com/c/...
+    # но не содержит /playlists, /videos, /shorts, /live, /community и т.п.
+    channel_patterns = [
+        r'^https?://(www\.)?youtube\.com/@[^/]+/?$',
+        r'^https?://(www\.)?youtube\.com/channel/[^/]+/?$',
+        r'^https?://(www\.)?youtube\.com/c/[^/]+/?$',
+    ]
+    for pat in channel_patterns:
+        if re.match(pat, url, re.I):
+            return True
+    return False
+
+def get_youtube_playlists_url(channel_url: str) -> str:
+    """
+    Возвращает ссылку на раздел плейлистов для данного канала.
+    """
+    if channel_url.endswith('/'):
+        return channel_url + 'playlists'
+    else:
+        return channel_url + '/playlists'
+
 def main():
     global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
     global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
@@ -2087,31 +2210,60 @@ def main():
 
     try:
         platform, url = extract_platform_and_url(raw_url)
+
+        # --- Если это канал YouTube, переходим к /playlists ---
+        if platform == "youtube" and is_youtube_channel_url(url):
+            print(Fore.YELLOW + "\nОбнаружена ссылка на канал YouTube. "
+                  "Будет автоматически открыт раздел плейлистов этого канала." + Style.RESET_ALL)
+            url = get_youtube_playlists_url(url)
+            log_debug(f"Автоматически построена ссылка на плейлисты канала: {url}")
+
         info = safe_get_video_info(url, platform)
         cookie_file_to_use = info.get('__cookiefile__')
 
         # --- Обработка плейлиста ---
         if info.get('_type') == 'playlist' or 'entries' in info:
             entries = info.get('entries', [])
+            log_debug(f"main: entries (type={type(entries)}, len={len(entries) if hasattr(entries, '__len__') else 'N/A'}): {str(entries)[:500]}")
             # --- Строим структуру плейлистов ---
             print(Fore.YELLOW + "\nАнализируем структуру канала/плейлиста, ищем вложенные плейлисты..." + Style.RESET_ALL)
             playlists_struct = collect_playlists(info.get('entries', []), platform, cookie_file_to_use)
+            log_debug(f"main: playlists_struct (type={type(playlists_struct)}, len={len(playlists_struct) if hasattr(playlists_struct, '__len__') else 'N/A'}): {str(playlists_struct)[:500]}")
+
+            if playlists_struct and all(
+                pl.get("videos") == [] and pl.get("sub_playlists") == [] and pl.get("url")
+                for pl in playlists_struct
+            ):
+                log_debug("main: Ветка — только плейлисты верхнего уровня (страница /playlists)")
+                print(Fore.YELLOW + "\nОбнаружены плейлисты канала! Будет произведён обход по каждому из них." + Style.RESET_ALL)
+                output_path = select_output_folder(auto_mode=False)
+                USER_SELECTED_OUTPUT_PATH = output_path
+                print(Fore.YELLOW + "\nНайдены плейлисты:" + Style.RESET_ALL)
+                print_playlists_tree(playlists_struct)
+                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
+                print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
+                download_tasks(tasks)
+                print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
+                return
 
             if not has_nested_playlists(playlists_struct) and len(playlists_struct) == 1:
-                # Нет вложенных плейлистов, обычный режим
+                log_debug("main: Ветка — один плейлист, без вложенных")
+                pl = playlists_struct[0]
+                # Обычный режим, когда videos — это видео
                 all_videos = []
                 for pl in playlists_struct:
                     all_videos.extend(pl["videos"])
+                log_debug(f"main: all_videos (len={len(all_videos)}): {str(all_videos)[:500]}")
                 print(Fore.YELLOW + f"\nВсего найдено видео: {len(all_videos)}" + Style.RESET_ALL)
                 if not all_videos:
                     print(Fore.RED + "В канале не найдено ни одного видео." + Style.RESET_ALL)
                     return
                 playlist_title = info.get('title') or "playlist"
                 saved_list_path = print_playlist_paginated(all_videos, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=playlist_title)
-                # Используй all_videos вместо entries!
-                entries = all_videos
             else:
                 # Есть вложенные плейлисты
+                log_debug("main: Ветка — есть вложенные плейлисты")
+                log_debug(f"main: playlists_struct (подробно): {str(playlists_struct)[:1000]}")
                 print(Fore.YELLOW + "\nОбнаружены вложенные плейлисты! Будет произведён обход по каждому из них." + Style.RESET_ALL)
                 output_path = select_output_folder(auto_mode=False)
                 USER_SELECTED_OUTPUT_PATH = output_path
@@ -2172,10 +2324,10 @@ def main():
                 if video_id == "bestvideo+bestaudio/best":
                     quality_map = {
                         "0": ("bestvideo+bestaudio/best", "Максимальное"),
-                        "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
-                        "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
-                        "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
-                        "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+                        "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                        "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                        "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                        "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
                     }
                     print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
                     for key, (_, label) in quality_map.items():
@@ -2337,7 +2489,14 @@ def main():
                         log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
                         return
                     except DownloadError as e:
-                        print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                        if is_video_unavailable_error(e):
+                            print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                            log_debug(f"Видео {idx} недоступно: {e}")
+                            continue
+                        else:
+                            print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                            log_debug(f"Ошибка загрузки видео {idx}: {e}")
+                            continue
                     except Exception as e:
                         print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
                         log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
@@ -2354,20 +2513,34 @@ def main():
                         continue
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста ===" + Style.RESET_ALL)
                     try:
-                        entry_info = safe_get_video_info(entry_url, platform)
-                        cookie_file_to_use = entry_info.get('__cookiefile__')
-                        chapters = entry_info.get("chapters")
-                        has_chapters = isinstance(chapters, list) and len(chapters) > 0
+                        try:
+                            entry_info = safe_get_video_info(entry_url, platform)
+                            cookie_file_to_use = entry_info.get('__cookiefile__')
+                            chapters = entry_info.get("chapters")
+                            has_chapters = isinstance(chapters, list) and len(chapters) > 0
+                        except DownloadError as e:
+                            if is_video_unavailable_error(e):
+                                print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                                log_debug(f"Видео {idx} недоступно: {e}")
+                                continue
+                            else:
+                                print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                                log_debug(f"Ошибка загрузки видео {idx}: {e}")
+                                continue
+                        except Exception as e:
+                            print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+                            log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
+                            continue
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         USER_SELECTED_VIDEO_CODEC = video_codec
                         USER_SELECTED_AUDIO_CODEC = audio_codec
                         if video_id == "bestvideo+bestaudio/best":
                             quality_map = {
                                 "0": ("bestvideo+bestaudio/best", "Максимальное"),
-                                "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
-                                "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
-                                "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
-                                "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+                                "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                                "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                                "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                                "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
                             }
                             print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
                             for key, (_, label) in quality_map.items():
@@ -2490,16 +2663,30 @@ def main():
             log_debug("Обнаружено одиночное видео.")
             chapters = info.get("chapters")
             has_chapters = isinstance(chapters, list) and len(chapters) > 0
-            video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
+            try:
+                video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
+            except DownloadError as e:
+                if is_video_unavailable_error(e):
+                    print(Fore.YELLOW + "Видео недоступно (премьера/скрыто/удалено). Завершение." + Style.RESET_ALL)
+                    log_debug(f"Одиночное видео недоступно: {e}")
+                    return
+                else:
+                    print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
+                    log_debug(f"Ошибка загрузки видео: {e}")
+                    return
+            except Exception as e:
+                print(Fore.RED + f"Непредвидённая ошибка при скачивании видео: {e}" + Style.RESET_ALL)
+                log_debug(f"Ошибка при скачивании видео: {e}\n{traceback.format_exc()}")
+                return
             USER_SELECTED_VIDEO_CODEC = video_codec
             USER_SELECTED_AUDIO_CODEC = audio_codec
             if video_id == "bestvideo+bestaudio/best":
                 quality_map = {
                     "0": ("bestvideo+bestaudio/best", "Максимальное"),
-                    "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
-                    "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
-                    "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
-                    "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+                    "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                    "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                    "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                    "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
                 }
                 print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
                 for key, (_, label) in quality_map.items():
