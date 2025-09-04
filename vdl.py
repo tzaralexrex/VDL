@@ -1601,12 +1601,34 @@ def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT,
     total = len(entries)
     all_lines = []
     saved_list_path = None
+
+    # --- Определяем основной канал (channel_id) ---
+    main_channel_id = None
+    for entry in entries:
+        if entry.get('channel_id'):
+            main_channel_id = entry['channel_id']
+            break
+
+    # --- Проверяем наличие чужих видео ---
+    has_other_channel = False
+    for entry in entries:
+        if entry.get('channel_id') and main_channel_id and entry['channel_id'] != main_channel_id:
+            has_other_channel = True
+            break
+
+    if has_other_channel:
+        print(Fore.YELLOW + "В плейлисте присутствуют видео с других каналов, номер — в квадратных скобках" + Style.RESET_ALL)
+
     for start in range(0, total, page_size):
         end = min(start + page_size, total)
         for idx in range(start, end):
             entry = entries[idx]
             title = entry.get('title') or entry.get('id') or f'Видео {idx+1}'
-            line = f"{idx+1}. {title}"
+            # --- Если видео с другого канала, выводим номер в квадратных скобках ---
+            if entry.get('channel_id') and main_channel_id and entry['channel_id'] != main_channel_id:
+                line = f"[{idx+1}]. {title}"
+            else:
+                line = f"{idx+1}. {title}"
             print(line)
             all_lines.append(line)
         if end < total:
@@ -2262,7 +2284,6 @@ def main():
                 info_playlists = safe_get_video_info(playlists_url, platform)
                 playlists_entries = info_playlists.get('entries', [])
                 # Выводим список плейлистов
-                print(Fore.CYAN + "\nПлейлисты канала:" + Style.RESET_ALL)
                 playlist_infos = []
                 for idx, pl in enumerate(playlists_entries, 1):
                     pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
@@ -2275,14 +2296,14 @@ def main():
                         except Exception:
                             count = 0
                     playlist_infos.append((idx, pl_title, count))
-
+                print(Fore.MAGENTA + "\nПлейлисты канала:" + Style.RESET_ALL)
                 for idx, pl_title, count in playlist_infos:
                     print(f"{idx}: {pl_title} ({count} видео)")
-                sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+                sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через пробел, запятую, диапазоны через тире; Enter — все): " + Style.RESET_ALL).strip()
                 if not sel_pl:
                     selected_playlists = playlists_entries
                 else:
-                    selected_pl_indexes = [int(s) for s in re.split(r'[ ,;]+', sel_pl) if s.strip().isdigit()]
+                    selected_pl_indexes = parse_selection(sel_pl, len(playlists_entries))
                     selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
                 playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
 
@@ -2290,7 +2311,7 @@ def main():
                 answer = input(Fore.CYAN + "\nХотите также скачать видео из других разделов канала (Видео, Shorts и т.д.), которые не входят в плейлисты? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
                 want_sections = (answer == "1")
                 if want_sections:
-                    print(Fore.CYAN + "\nРазделы канала:" + Style.RESET_ALL)
+                    print(Fore.MAGENTA + "\nРазделы канала:" + Style.RESET_ALL)
                     for idx, title, entry in sections:
                         count = len(entry.get('entries', [])) if entry.get('entries') else 0
                         print(f"{idx}: {title} ({count} видео)")
@@ -2311,7 +2332,7 @@ def main():
             else:
                 # Ссылка на канал, сперва разделы
                 print(Fore.YELLOW + "\nОбнаружена ссылка на канал YouTube." + Style.RESET_ALL)
-                print(Fore.CYAN + "\nРазделы канала:" + Style.RESET_ALL)
+                print(Fore.MAGENTA + "\nРазделы канала:" + Style.RESET_ALL)
                 for idx, title, entry in sections:
                     count = len(entry.get('entries', [])) if entry.get('entries') else 0
                     print(f"{idx}: {title} ({count} видео)")
@@ -2337,7 +2358,6 @@ def main():
                     print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
                     info_playlists = safe_get_video_info(playlists_url, platform)
                     playlists_entries = info_playlists.get('entries', [])
-                    print(Fore.CYAN + "\nПлейлисты канала:" + Style.RESET_ALL)
                     playlist_infos = []
                     for idx, pl in enumerate(playlists_entries, 1):
                         pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
@@ -2350,14 +2370,14 @@ def main():
                             except Exception:
                                 count = 0
                         playlist_infos.append((idx, pl_title, count))
-
+                    print(Fore.MAGENTA + "\nПлейлисты канала:" + Style.RESET_ALL)
                     for idx, pl_title, count in playlist_infos:
                         print(f"{idx}: {pl_title} ({count} видео)")
-                    sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+                    sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через пробел, запятую, диапазоны через тире; Enter — все): " + Style.RESET_ALL).strip()
                     if not sel_pl:
                         selected_playlists = playlists_entries
                     else:
-                        selected_pl_indexes = [int(s) for s in re.split(r'[ ,;]+', sel_pl) if s.strip().isdigit()]
+                        selected_pl_indexes = parse_selection(sel_pl, len(playlists_entries))
                         selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
                     playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
 
