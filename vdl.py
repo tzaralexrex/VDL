@@ -2239,60 +2239,88 @@ def main():
         if platform == "youtube" and (is_youtube_channel_url(url) or is_youtube_playlists_url(url)):
             selected_video_ids = {}
 
-            # Определяем, что доступно: разделы, плейлисты
             channel_url = url
             if is_youtube_playlists_url(url):
                 channel_url = re.sub(r'/playlists/?$', '', url)
             print(Fore.YELLOW + "Получаем информацию по разделам канала..." + Style.RESET_ALL)
             info_channel = safe_get_video_info(channel_url, platform)
             channel_entries = info_channel.get('entries', [])
-            # Собираем разделы канала
             sections = []
             for idx, entry in enumerate(channel_entries, 1):
                 title = entry.get('title') or entry.get('id') or entry.get('url') or f"Раздел {idx}"
                 sections.append((idx, title, entry))
 
-            # --- Перемещаем запрос информации о плейлистах ниже ---
             playlists_struct = []
             info_playlists = None
+            section_playlists = []
 
-            # Спрашиваем пользователя, что он хочет скачать
-            want_sections = False
-            want_playlists = False
-
+            # --- Новый порядок: сперва плейлисты, если ссылка на /playlists ---
             if is_youtube_playlists_url(url):
                 print(Fore.YELLOW + "\nОбнаружена ссылка на раздел плейлистов канала YouTube." + Style.RESET_ALL)
-                answer = input(Fore.CYAN + "\nХотите также проверить и скачать видео из других разделов канала (Видео, Shorts и т.д.), которые не входят в плейлисты? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                playlists_url = get_youtube_playlists_url(channel_url)
+                print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
+                info_playlists = safe_get_video_info(playlists_url, platform)
+                playlists_entries = info_playlists.get('entries', [])
+                # Выводим список плейлистов
+                print(Fore.CYAN + "\nПлейлисты канала:" + Style.RESET_ALL)
+                playlist_infos = []
+                for idx, pl in enumerate(playlists_entries, 1):
+                    pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
+                    pl_url = pl.get('url') or pl.get('webpage_url')
+                    count = 0
+                    if pl_url:
+                        try:
+                            pl_info = safe_get_video_info(pl_url, platform)
+                            count = len(pl_info.get('entries', []))
+                        except Exception:
+                            count = 0
+                    playlist_infos.append((idx, pl_title, count))
+
+                for idx, pl_title, count in playlist_infos:
+                    print(f"{idx}: {pl_title} ({count} видео)")
+                sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+                if not sel_pl:
+                    selected_playlists = playlists_entries
+                else:
+                    selected_pl_indexes = [int(s) for s in re.split(r'[ ,;]+', sel_pl) if s.strip().isdigit()]
+                    selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
+                playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
+
+                # После выбора плейлистов спрашиваем про разделы
+                answer = input(Fore.CYAN + "\nХотите также скачать видео из других разделов канала (Видео, Shorts и т.д.), которые не входят в плейлисты? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
                 want_sections = (answer == "1")
-                want_playlists = True
+                if want_sections:
+                    print(Fore.CYAN + "\nРазделы канала:" + Style.RESET_ALL)
+                    for idx, title, entry in sections:
+                        count = len(entry.get('entries', [])) if entry.get('entries') else 0
+                        print(f"{idx}: {title} ({count} видео)")
+                    sel = input(Fore.CYAN + "Введите номера разделов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+                    if not sel:
+                        selected_sections = [entry for _, _, entry in sections]
+                    else:
+                        selected_indexes = [int(s) for s in re.split(r'[ ,;]+', sel) if s.strip().isdigit()]
+                        selected_sections = [entry for idx, _, entry in sections if idx in selected_indexes]
+                    for idx, section in enumerate(selected_sections, 1):
+                        title = section.get('title') or section.get('id') or section.get('url') or f"Раздел {idx}"
+                        section_entries = section.get('entries', [])
+                        section_playlists.append({
+                            "title": title,
+                            "videos": section_entries,
+                            "sub_playlists": []
+                        })
             else:
+                # Ссылка на канал, сперва разделы
                 print(Fore.YELLOW + "\nОбнаружена ссылка на канал YouTube." + Style.RESET_ALL)
                 print(Fore.CYAN + "\nРазделы канала:" + Style.RESET_ALL)
                 for idx, title, entry in sections:
                     count = len(entry.get('entries', [])) if entry.get('entries') else 0
                     print(f"{idx}: {title} ({count} видео)")
-                answer = input(Fore.CYAN + "\nХотите также скачать видео из плейлистов этого канала? (1 — да, 0 — только разделы, Enter = 1): " + Style.RESET_ALL).strip()
-                want_playlists = (answer != "0")
-                want_sections = True
-
-            # --- Только если пользователь выбрал плейлисты, запрашиваем их структуру ---
-            if want_playlists and (is_youtube_playlists_url(url) or is_youtube_channel_url(url)):
-                playlists_url = get_youtube_playlists_url(channel_url)
-                print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
-                info_playlists = safe_get_video_info(playlists_url, platform)
-                playlists_struct = collect_playlists(info_playlists.get('entries', []), platform, info_playlists.get('__cookiefile__'))
-
-            # Если нужны разделы — спрашиваем какие
-            all_section_videos = []
-            if want_sections:
                 sel = input(Fore.CYAN + "Введите номера разделов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
                 if not sel:
                     selected_sections = [entry for _, _, entry in sections]
                 else:
                     selected_indexes = [int(s) for s in re.split(r'[ ,;]+', sel) if s.strip().isdigit()]
                     selected_sections = [entry for idx, _, entry in sections if idx in selected_indexes]
-                # Формируем отдельный плейлист для каждого раздела!
-                section_playlists = []
                 for idx, section in enumerate(selected_sections, 1):
                     title = section.get('title') or section.get('id') or section.get('url') or f"Раздел {idx}"
                     section_entries = section.get('entries', [])
@@ -2301,32 +2329,49 @@ def main():
                         "videos": section_entries,
                         "sub_playlists": []
                     })
-            # Если нужны и разделы, и плейлисты — спрашиваем порядок
-            order = "1"
-            if want_sections and want_playlists:
-                order = input(Fore.CYAN + "\nСначала скачать видео из разделов канала (1 — сначала разделы, 0 — сначала плейлисты, Enter = 1): " + Style.RESET_ALL).strip() or "1"
+                # После выбора разделов спрашиваем про плейлисты
+                answer = input(Fore.CYAN + "\nХотите также скачать видео из плейлистов этого канала? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                want_playlists = (answer != "0")
+                if want_playlists:
+                    playlists_url = get_youtube_playlists_url(channel_url)
+                    print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
+                    info_playlists = safe_get_video_info(playlists_url, platform)
+                    playlists_entries = info_playlists.get('entries', [])
+                    print(Fore.CYAN + "\nПлейлисты канала:" + Style.RESET_ALL)
+                    playlist_infos = []
+                    for idx, pl in enumerate(playlists_entries, 1):
+                        pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
+                        pl_url = pl.get('url') or pl.get('webpage_url')
+                        count = 0
+                        if pl_url:
+                            try:
+                                pl_info = safe_get_video_info(pl_url, platform)
+                                count = len(pl_info.get('entries', []))
+                            except Exception:
+                                count = 0
+                        playlist_infos.append((idx, pl_title, count))
+
+                    for idx, pl_title, count in playlist_infos:
+                        print(f"{idx}: {pl_title} ({count} видео)")
+                    sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+                    if not sel_pl:
+                        selected_playlists = playlists_entries
+                    else:
+                        selected_pl_indexes = [int(s) for s in re.split(r'[ ,;]+', sel_pl) if s.strip().isdigit()]
+                        selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
+                    playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
 
             # Собираем задачи
             all_tasks = []
-            if want_sections and (order != "0") and section_playlists:
-                output_path = select_output_folder(auto_mode=False)
+            output_path = select_output_folder(auto_mode=False)
+            if section_playlists:
                 all_tasks += collect_user_choices_for_playlists(
-                    section_playlists,
-                    output_path, auto_mode, platform, args, info_channel.get('__cookiefile__'), selected_video_ids=selected_video_ids
+                    section_playlists, output_path, auto_mode, platform, args, info_channel.get('__cookiefile__'), selected_video_ids=selected_video_ids
                 )
-            if want_playlists and playlists_struct:
-                if not (want_sections and order != "0"):
-                    output_path = select_output_folder(auto_mode=False)
+            if playlists_struct:
                 all_tasks += collect_user_choices_for_playlists(
                     playlists_struct, output_path, auto_mode, platform, args, info_playlists.get('__cookiefile__'), selected_video_ids=selected_video_ids
                 )
-            if want_sections and order == "0" and section_playlists:
-                output_path = select_output_folder(auto_mode=False)
-                all_tasks += collect_user_choices_for_playlists(
-                    section_playlists,
-                    output_path, auto_mode, platform, args, info_channel.get('__cookiefile__'), selected_video_ids=selected_video_ids
-                )
-            # Запускаем скачивание только после всех выборов
             if all_tasks:
                 print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
                 download_tasks(all_tasks)
