@@ -17,6 +17,8 @@ import msvcrt
 from pathlib import Path
 from datetime import datetime
 from shutil import which
+from dataclasses import dataclass
+from typing import List
 
 DEBUG = 1  # Глобальная переменная для включения/выключения отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
@@ -37,6 +39,22 @@ COOKIES_GOOGLE = "cookies_google.txt"
 MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
 
 CHECK_VER = 1  # 1 = проверять версии зависимостей, 0 = только наличие модулей
+
+# Блок нормализации субтитров
+MIN_DISPLAY_MS = 200           # минимальная длительность любого итогового блока, ms
+INTER_CAPTION_GAP_MS = 0       # "межтитровый интервал" в ms (вычитается из start(next) при необходимости)
+
+@dataclass
+class Caption:
+    idx: int
+    start: int
+    end: int
+    text: str
+
+SRT_BLOCK_RE = re.compile(
+    r"(\d+)\s*\n(\d{2}:\d{2}:\d{2},\d{3})\s-->\s(\d{2}:\d{2}:\d{2},\d{3})\s*\n(.*?)(?=\n{2,}|\Z)",
+    re.DOTALL
+)
 
 # --- Глобальные переменные для хранения пользовательских выборов ---
 USER_SELECTED_SUB_LANGS = []
@@ -125,8 +143,8 @@ yt_dlp = import_or_update('yt_dlp', force_check=True)
 browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
-brotli = import_or_update('brotli')
-pycryptodomex = import_or_update('Cryptodome', 'pycryptodomex')
+curl_cffi = import_or_update('curl_cffi')
+pyppeteer = import_or_update('pyppeteer')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
 
 from yt_dlp.utils import DownloadError
@@ -764,6 +782,14 @@ def ask_and_select_subtitles(info, auto_mode=False):
             return None
         download_automatics.update(selected_langs)
         write_automatic = True if selected_langs else False
+        normalize_auto_subs = False
+        keep_original_auto_subs = False
+        if write_automatic and not auto_mode:
+            norm_ans = input(Fore.CYAN + "Нормализовать автоматические субтитры (убрать перекрытия таймингов)? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            normalize_auto_subs = (norm_ans != "0")
+            if normalize_auto_subs:
+                keep_ans = input(Fore.CYAN + "Сохранять оригинальные автоматические субтитры? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                keep_original_auto_subs = (keep_ans == "1")
 
     print(Fore.GREEN + f"Выбранные языки субтитров: {', '.join(selected_langs)}" + Style.RESET_ALL)
     log_debug(f"Выбранные субтитры: {selected_langs}, автоматические: {sorted(download_automatics)}")
@@ -795,7 +821,9 @@ def ask_and_select_subtitles(info, auto_mode=False):
         'writesubtitles': use_embedded,
         'writeautomaticsub': write_automatic,
         'subtitleslangs': selected_langs,
-        'subtitlesformat': sub_format
+        'subtitlesformat': sub_format,
+        'normalize_auto_subs': normalize_auto_subs if write_automatic else False,
+        'keep_original_auto_subs': keep_original_auto_subs if write_automatic else False
     }
 
 def select_output_folder(auto_mode=False):
@@ -1038,7 +1066,6 @@ def download_video(
         'writesubtitles'   : False,
         'progress_hooks'   : [],      # заполним ниже
     }
-
     # --- live_from_start для трансляций ---
     try:
         info = get_video_info(url, platform, cookie_file_path)
@@ -2164,6 +2191,16 @@ def download_tasks(tasks):
             entry_url, video_id_final, audio_id_final, task["folder"], output_name, task["output_format"],
             task["platform"], task["cookie_file_to_use"], subtitle_options=task["subtitle_options"]
         )
+        subtitle_download_options = task.get("subtitle_options")
+        if subtitle_download_options and subtitle_download_options.get('writeautomaticsub'):
+            normalize_auto = subtitle_download_options.get('normalize_auto_subs', False)
+            keep_bak = subtitle_download_options.get('keep_original_auto_subs', False)
+            sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
+            for lang in subtitle_download_options.get('subtitleslangs', []):
+                sub_file = os.path.join(task["folder"], f"{output_name}.{lang}.{sub_format}")
+                if os.path.exists(sub_file) and normalize_auto and sub_format == "srt":
+                    normalize_srt_file(sub_file, overwrite=True, backup=keep_bak)
+                    print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
         if downloaded_file:
             print(Fore.GREEN + f"Видео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
         else:
@@ -2201,6 +2238,115 @@ def get_youtube_playlists_url(channel_url: str) -> str:
         return channel_url + 'playlists'
     else:
         return channel_url + '/playlists'
+
+def parse_time_to_ms(t: str) -> int:
+    h, m, s_ms = t.split(":")
+    s, ms = s_ms.split(",")
+    return (int(h)*3600 + int(m)*60 + int(s)) * 1000 + int(ms)
+
+def ms_to_srt_time(ms: int) -> str:
+    if ms < 0:
+        ms = 0
+    h = ms // 3600000
+    ms %= 3600000
+    m = ms // 60000
+    ms %= 60000
+    s = ms // 1000
+    ms = ms % 1000
+    return f"{h:02}:{m:02}:{s:02},{ms:03}"
+
+def parse_srt(path: str) -> List[Caption]:
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    caps: List[Caption] = []
+    for m in SRT_BLOCK_RE.finditer(content):
+        idx = int(m.group(1))
+        start = parse_time_to_ms(m.group(2))
+        end = parse_time_to_ms(m.group(3))
+        text = re.sub(r"[ \t]+\n", "\n", m.group(4).strip())
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        if end <= start or not text.strip():
+            continue
+        caps.append(Caption(idx, start, end, text))
+    caps.sort(key=lambda c: (c.start, c.end, c.idx))
+    return caps
+
+def normalize_by_pairs_strict(caps: List[Caption]) -> List[Caption]:
+    out: List[Caption] = []
+    i = 0
+    n = len(caps)
+    while i < n:
+        top = caps[i]
+        if i + 1 < n:
+            bottom = caps[i+1]
+            if not (top.end <= bottom.start or bottom.end <= top.start):
+                block_start = top.start
+                if i + 2 < n:
+                    next_first_start = caps[i+2].start
+                    if bottom.end <= next_first_start:
+                        block_end = bottom.end
+                    else:
+                        block_end = next_first_start - INTER_CAPTION_GAP_MS
+                else:
+                    block_end = bottom.end
+                if block_end < block_start + MIN_DISPLAY_MS:
+                    block_end = block_start + MIN_DISPLAY_MS
+                out.append(Caption(len(out)+1, block_start, block_end, top.text + "\n" + bottom.text))
+                i += 2
+                continue
+        block_start = top.start
+        if i + 1 < n:
+            next_start = caps[i+1].start
+            if top.end <= next_start:
+                block_end = top.end
+            else:
+                block_end = next_start - INTER_CAPTION_GAP_MS
+        else:
+            block_end = top.end
+        if block_end < block_start + MIN_DISPLAY_MS:
+            block_end = block_start + MIN_DISPLAY_MS
+        out.append(Caption(len(out)+1, block_start, block_end, top.text))
+        i += 1
+    for k in range(1, len(out)):
+        prev = out[k-1]
+        cur = out[k]
+        if cur.start < prev.end:
+            prev.end = cur.start
+            if prev.end < prev.start + MIN_DISPLAY_MS:
+                prev.end = prev.start + MIN_DISPLAY_MS
+                if prev.end > cur.start:
+                    cur.start = prev.end
+                    if cur.end < cur.start + MIN_DISPLAY_MS:
+                        cur.end = cur.start + MIN_DISPLAY_MS
+    for idx, c in enumerate(out, start=1):
+        if c.end < c.start:
+            c.end = c.start + MIN_DISPLAY_MS
+        c.idx = idx
+    return out
+
+def write_srt(path: str, caps: List[Caption]):
+    with open(path, "w", encoding="utf-8") as f:
+        for i, c in enumerate(caps, start=1):
+            f.write(f"{i}\n{ms_to_srt_time(c.start)} --> {ms_to_srt_time(c.end)}\n{c.text}\n\n")
+
+def normalize_srt_file(inp: str, overwrite: bool = True, backup: bool = False):
+    if not os.path.exists(inp):
+        print(f"Input file not found: {inp}")
+        return
+    caps = parse_srt(inp)
+    norm = normalize_by_pairs_strict(caps)
+    if overwrite:
+        if backup:
+            bakfile = inp + ".bak"
+            if not os.path.exists(bakfile):
+                shutil.copy2(inp, bakfile)
+                print(f"Backup created: {bakfile}")
+        target = inp
+    else:
+        base, ext = os.path.splitext(inp)
+        target = base + "_normalized.srt"
+    write_srt(target, norm)
+    print(f"Processed {inp} -> {target} ({len(norm)} blocks)")
 
 def main():
     global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
@@ -2953,6 +3099,15 @@ def main():
                 cookie_file_to_use,
                 subtitle_download_options
             )
+            if subtitle_download_options and subtitle_download_options.get('writeautomaticsub'):
+                normalize_auto = subtitle_download_options.get('normalize_auto_subs', False)
+                keep_bak = subtitle_download_options.get('keep_original_auto_subs', False)
+                sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
+                for lang in subtitle_download_options.get('subtitleslangs', []):
+                    sub_file = os.path.join(output_path, f"{output_name}.{lang}.{sub_format}")
+                    if os.path.exists(sub_file) and normalize_auto and sub_format == "srt":
+                        normalize_srt_file(sub_file, overwrite=True, backup=keep_bak)
+                        print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
             if downloaded_file:
                 print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
             else:
