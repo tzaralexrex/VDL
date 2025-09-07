@@ -1,4 +1,5 @@
 # Universal Video Downloader with Cookie Browser Support
+# Скрипт для скачивания видео с поддержкой куки, плейлистов, форматов, субтитров и глав.
 
 import subprocess
 import sys
@@ -20,67 +21,79 @@ from shutil import which
 from dataclasses import dataclass
 from typing import List
 
-DEBUG = 1  # Глобальная переменная для включения/выключения отладки
-DEBUG_APPEND = 1 # 0 = перезаписывать лог при каждом запуске, 1 = дописывать к существующему логу
 
-DEBUG_FILE = 'debug.log' # имя файла журнала отладки
-InitialDir = "Video"  # относительный путь к подпапке Video в текущей директории для автоматического выбора папки скачивания
+# --- Глобальные настройки и константы ---
+DEBUG = 1  # Включение/выключение отладки
+DEBUG_APPEND = 1 # 0 = перезаписывать лог, 1 = дописывать к существующему
+DEBUG_FILE = 'debug.log' # Имя файла журнала отладки
+InitialDir = "Video"  # Папка для автоматического выбора сохранения
 
-PAGE_SIZE = 20    # количество видео на одной странице при выводе плейлиста
-PAGE_TIMEOUT = 10 # таймаут ожидания (секунд) между страницами плейлиста
+# --- Настройки вывода плейлистов ---
+PAGE_SIZE = 20    # Количество видео на одной странице при выводе плейлиста
+PAGE_TIMEOUT = 10 # Таймаут ожидания между страницами плейлиста
 
-COOKIES_FB = 'cookies_fb.txt'
-COOKIES_YT = 'cookies_yt.txt'
-COOKIES_VI = 'cookies_vi.txt'   # Vimeo
-COOKIES_RT = 'cookies_rt.txt'   # Rutube
-COOKIES_VK = 'cookies_vk.txt'   # VK
-COOKIES_GOOGLE = "cookies_google.txt"
+# --- Пути к cookie-файлам для разных платформ ---
+COOKIES_FB = 'cookies_fb.txt'      # Facebook
+COOKIES_YT = 'cookies_yt.txt'      # YouTube
+COOKIES_VI = 'cookies_vi.txt'      # Vimeo
+COOKIES_RT = 'cookies_rt.txt'      # Rutube
+COOKIES_VK = 'cookies_vk.txt'      # VK
+COOKIES_GOOGLE = "cookies_google.txt" # Google
 
 MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
 
-CHECK_VER = 1  # 1 = проверять версии зависимостей, 0 = только наличие модулей
+CHECK_VER = 1  # Проверять версии зависимостей (1) или только наличие модулей (0)
 
-# Блок нормализации субтитров
-MIN_DISPLAY_MS = 200           # минимальная длительность любого итогового блока, ms
-INTER_CAPTION_GAP_MS = 0       # "межтитровый интервал" в ms (вычитается из start(next) при необходимости)
+# --- Настройки нормализации субтитров ---
+MIN_DISPLAY_MS = 200           # Минимальная длительность блока субтитров, ms
+INTER_CAPTION_GAP_MS = 0       # Межтитровый интервал, ms
+
 
 @dataclass
+# Класс для хранения информации о субтитре (индекс, время начала/конца, текст)
 class Caption:
     idx: int
     start: int
     end: int
     text: str
 
+
+# Регулярное выражение для разбора блоков субтитров SRT
 SRT_BLOCK_RE = re.compile(
     r"(\d+)\s*\n(\d{2}:\d{2}:\d{2},\d{3})\s-->\s(\d{2}:\d{2}:\d{2},\d{3})\s*\n(.*?)(?=\n{2,}|\Z)",
     re.DOTALL
 )
 
-# --- Глобальные переменные для хранения пользовательских выборов ---
-USER_SELECTED_SUB_LANGS = []
-USER_SELECTED_SUB_FORMAT = None
-USER_INTEGRATE_SUBS = False
-USER_KEEP_SUB_FILES = True
-USER_INTEGRATE_CHAPTERS = False
-USER_KEEP_CHAPTER_FILE = False
-USER_SELECTED_VIDEO_CODEC = None
-USER_SELECTED_AUDIO_CODEC = None
-USER_SELECTED_OUTPUT_FORMAT = None
-USER_SELECTED_CHAPTER_FILENAME = None
-USER_SELECTED_OUTPUT_NAME = None
-USER_SELECTED_OUTPUT_PATH = None
 
-# поддержка модуля importlib.metadata для Python <3.8
+# --- Глобальные переменные для хранения пользовательских настроек ---
+USER_SELECTED_SUB_LANGS = []           # Языки субтитров для интеграции
+USER_SELECTED_SUB_FORMAT = None        # Формат субтитров
+USER_INTEGRATE_SUBS = False           # Интегрировать субтитры в итоговый файл
+USER_KEEP_SUB_FILES = True             # Сохранять отдельные файлы субтитров
+USER_INTEGRATE_CHAPTERS = False        # Интегрировать главы
+USER_KEEP_CHAPTER_FILE = False         # Сохранять файл глав отдельно
+USER_SELECTED_VIDEO_CODEC = None       # Выбранный видеокодек
+USER_SELECTED_AUDIO_CODEC = None       # Выбранный аудиокодек
+USER_SELECTED_OUTPUT_FORMAT = None     # Итоговый формат файла
+USER_SELECTED_CHAPTER_FILENAME = None  # Имя файла глав
+USER_SELECTED_OUTPUT_NAME = None       # Имя итогового файла
+USER_SELECTED_OUTPUT_PATH = None       # Путь для сохранения
+
+
+# --- Импорт функций для получения версии пакета (совместимость с Python <3.8) ---
 try:
     from importlib.metadata import version as get_version, PackageNotFoundError
 except ImportError:
     from importlib_metadata import version as get_version, PackageNotFoundError  # type: ignore
 
+
+# --- Импорт сторонних модулей через универсальную функцию ---
 requests = importlib.import_module('requests')
 packaging = importlib.import_module('packaging')
 from packaging.version import parse as parse_version
 
-# --- Универсальный импорт и автообновление внешних модулей ---
+## --- Универсальный импорт и автообновление внешних модулей ---
+## Используется для автоматической установки и обновления зависимостей
 def import_or_update(module_name, pypi_name=None, min_version=None, force_check=False):
     """
     Импортирует модуль, при необходимости устанавливает или обновляет его до актуальной версии с PyPI.
@@ -90,20 +103,25 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
     :param force_check: принудительно проверять версии даже если CHECK_VER=0
     :return: импортированный модуль
     """
+
+    # Определяем имя пакета для PyPI, если оно отличается от имени модуля
     pypi_name = pypi_name or module_name
+
+    # Если не требуется проверка версии — просто импортируем модуль
     if not CHECK_VER and not force_check:
-        # Только проверка наличия модуля
         try:
             return importlib.import_module(module_name)
         except ImportError:
+            # Модуль не найден — выводим инструкцию для пользователя и завершаем работу
             print(f"\n[!] Необходимый модуль {pypi_name} не установлен. Установите его вручную командой:\n    pip install {pypi_name}\nРабота невозможна.")
             sys.exit(1)
 
-    # Полная проверка с версионностью
+    # Полная проверка: наличие, версия, обновление
     print(f"Проверяю наличие и актуальность модуля {pypi_name}", end='', flush=True)
     try:
+        # Импортируем модуль
         module = importlib.import_module(module_name)
-        # Проверка актуальности версии
+        # Проверяем актуальность версии через запрос к PyPI
         try:
             resp = requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
             if resp.ok:
@@ -111,40 +129,44 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
                 try:
                     installed = get_version(pypi_name)
                 except PackageNotFoundError:
+                    # Если не удалось получить версию через metadata — пробуем через __version__
                     installed = getattr(module, '__version__', None)
+                # Если установленная версия меньше актуальной — обновляем
                 if installed and parse_version(installed) < parse_version(latest):
-                    print()  # Завершить строку перед сообщением
+                    print()
                     print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
                     module = importlib.reload(module)
             print(" - OK")
         except Exception as e:
-            print()  # Завершить строку перед сообщением
+            # Ошибка при проверке или обновлении — выводим причину, но не прерываем работу
             print(f"[!] Не удалось проверить или обновить {pypi_name}: {e}")
+        # Проверяем минимально требуемую версию, если указана
         if min_version:
             try:
                 installed = get_version(pypi_name)
             except PackageNotFoundError:
                 installed = getattr(module, '__version__', None)
             if installed and parse_version(installed) < parse_version(min_version):
-                print()  # Завершить строку перед сообщением
+                print()
                 print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
                 module = importlib.reload(module)
         return module
     except ImportError:
-        print()  # Завершить строку перед сообщением
+        # Модуль не установлен — пробуем установить через pip
         print(f"[!] {pypi_name} не установлен. Устанавливаем...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pypi_name])
         return importlib.import_module(module_name)
 
-# Импорт сторонних модулей через универсальную функцию
+
+# --- Импорт сторонних модулей с автоматической установкой/обновлением ---
 yt_dlp = import_or_update('yt_dlp', force_check=True)
 browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
-curl_cffi = import_or_update('curl_cffi')
-pyppeteer = import_or_update('pyppeteer')
+# curl_cffi = import_or_update('curl_cffi')
+# pyppeteer = import_or_update('pyppeteer')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
 
 from yt_dlp.utils import DownloadError
@@ -158,16 +180,18 @@ except ImportError:
     tk = None
     filedialog = None
 
-init(autoreset=True)  # инициализация colorama и автоматический сброс цвета после каждого print
+init(autoreset=True)  # Инициализация colorama и автоматический сброс цвета после каждого print
 
-debug_file_initialized = False
+debug_file_initialized = False  # Флаг инициализации файла журнала отладки
 
+## --- Проверка валидности cookie-файла для платформы ---
 def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
     """
     Проверяет, «жив» ли куки-файл по реальной ссылке (например, на видео).
     Если test_url не задан, используется главная страница платформы.
     """
     if not test_url:
+        # Если не указана тестовая ссылка — используем главную страницу платформы
         test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
     try:
         opts = {
@@ -185,47 +209,67 @@ def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) 
         return False
     except Exception:
         return False
-    
+
 def detect_ffmpeg_path():
+    """
+    Ищет ffmpeg.exe в локальной папке и в системном PATH.
+    Возвращает путь к ffmpeg или None.
+    """
+    # Получаем путь к папке, где находится скрипт
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    # Формируем локальный путь к ffmpeg.exe
     local_path = os.path.normpath(os.path.join(script_dir, "ffmpeg.exe"))
     log_debug(f"Поиск ffmpeg: Проверяем локальный путь: {local_path}")
+    # Проверяем наличие ffmpeg.exe в локальной папке
     if os.path.isfile(local_path):
         log_debug(f"FFmpeg найден по локальному пути: {local_path}")
         return local_path
+    # Если не найден — ищем в системном PATH
     system_path = which("ffmpeg")
     log_debug(f"Поиск ffmpeg: Проверяем системный PATH: {system_path}")
     if system_path and os.path.isfile(system_path):
         log_debug(f"FFmpeg найден в системном PATH: {system_path}")
         return system_path
+    # Если не найден нигде — возвращаем None
     log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH.")
     return None
 
 def log_debug(message):
+    """
+    Записывает сообщение в файл журнала отладки, если DEBUG включён.
+    """
     global debug_file_initialized
 
+    # Если отладка выключена — ничего не делаем
     if not DEBUG:
         return
 
+    # Формируем строку для записи в лог
     log_line = f"[{datetime.now()}] {message}\n"
 
+    # Если файл ещё не инициализирован — открываем в нужном режиме
     if not debug_file_initialized:
         mode = 'a' if DEBUG_APPEND else 'w'
         with open(DEBUG_FILE, mode, encoding='utf-8') as f:
             if DEBUG_APPEND:
-                # Добавляем разделитель и заголовок нового сеанса только при дописывании
+                # В режиме дописывания — добавляем разделитель и заголовок нового сеанса
                 f.write(f"\n{'='*60}\n--- Начинается новый сеанс отладки [{datetime.now()}] ---\n")
-            # В режиме 'w' просто начинаем с первой строки
+            # В режиме 'w' — просто записываем первую строку
             f.write(log_line)
         debug_file_initialized = True
     else:
+        # Если файл уже инициализирован — просто дописываем строку
         with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
             f.write(log_line)
 
 def clean_url_by_platform(platform: str, url: str) -> str:
+    """
+    Очищает и нормализует ссылку для указанной платформы (Facebook, VK и др.).
+    """
     try:
+        # Для Facebook — извлекаем ID видео по разным паттернам
         if platform == 'facebook':
-            # Если ссылка уже содержит /watch/?v=..., не трогать!
+            # Если ссылка уже содержит /watch/?v=..., не трогаем
             if re.search(r'/watch/\?v=\d+', url):
                 return url
             fb_patterns = [
@@ -235,30 +279,42 @@ def clean_url_by_platform(platform: str, url: str) -> str:
                 r'/watch/\?v=(\d+)',
                 r'/video.php\?v=(\d+)'
             ]
+            # Перебираем паттерны, ищем совпадение
             for pattern in fb_patterns:
                 match = re.search(pattern, url)
                 if match:
                     video_id = match.group(1)
                     return f"https://m.facebook.com/watch/?v={video_id}&_rdr"
+            # Если не удалось распознать — выбрасываем ошибку
             raise ValueError(Fore.RED + "Не удалось распознать ID видео Facebook" + Style.RESET_ALL)
 
+        # Для VK — приводим ссылку к стандартному виду
         elif platform == 'vk':
             match = re.search(r'(video[-\d]+_\d+)', url)
             return f"https://vk.com/{match.group(1)}" if match else url
 
+        # Для Vimeo — убираем якорь
         elif platform == 'vimeo':
             return url.split('#')[0]
 
+        # Для Rutube — убираем query-параметры
         elif platform == 'rutube':
             return url.split('?')[0]
 
     except Exception as e:
+        # Логируем ошибку, если не удалось обработать ссылку
         log_debug(f"Ошибка при очистке URL для {platform}: {e}")
+    # Если ничего не подошло — возвращаем исходную ссылку
     return url
 
 def extract_platform_and_url(raw_url: str):
+    """
+    Определяет платформу по ссылке и возвращает (platform, cleaned_url).
+    """
+    # Очищаем входную ссылку от пробелов
     url = raw_url.strip()
 
+    # Словарь паттернов для определения платформы
     patterns = {
         'youtube':  [r'(?:youtube\.com|youtu\.be)'],
         'facebook': [r'(?:facebook\.com|fb\.watch)'],
@@ -267,32 +323,36 @@ def extract_platform_and_url(raw_url: str):
         'vk':       [r'(?:vk\.com|vkontakte\.ru)'],
     }
 
-    # перебираем в фиксированном порядке (обычная проверка «известных» платформ)
+    # Перебираем платформы и паттерны для поиска совпадения
     for platform, pats in patterns.items():
         for pat in pats:
             if re.search(pat, url, re.I):
+                # Если совпало — нормализуем ссылку и возвращаем
                 cleaned_url = clean_url_by_platform(platform, url)
                 log_debug(f"Определена платформа: {platform} для URL: {cleaned_url}")
                 return platform, cleaned_url
 
-    # ничего не совпало - возвращаем «generic»
+    # Если ни один паттерн не подошёл — возвращаем generic-режим
     log_debug("Платформа не опознана, пробуем generic-режим.")
     return "generic", url
-
 
 def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
     """
     Сохраняет объект CookieJar в файл Netscape-формата, который может быть использован yt-dlp.
     """
     try:
+        # Создаём объект MozillaCookieJar для сохранения в Netscape-формате
         mozilla_cj = http.cookiejar.MozillaCookieJar(filename)
+        # Перебираем куки и добавляем их в объект
         for cookie in cj:
             mozilla_cj.set_cookie(cookie)
+        # Сохраняем куки в файл
         mozilla_cj.save(ignore_discard=True, ignore_expires=True)
         print(Fore.GREEN + f"Куки успешно сохранены в файл: {filename}" + Style.RESET_ALL)
         log_debug(f"Куки успешно сохранены в файл: {filename}")
         return True
     except Exception as e:
+        # В случае ошибки — выводим причину и логируем
         print(Fore.RED + f"Ошибка при сохранении куков в файл {filename}: {e}" + Style.RESET_ALL)
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
@@ -302,21 +362,23 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
     """
-
     # 1. Попытка загрузить куки из существующего файла
     if os.path.exists(cookie_file):
         if not force_browser:
             # Передаём test_url — реальную ссылку (если есть)
             test_url = url
             log_debug(f"[LOG] Проверка куки-файла: {cookie_file} для платформы {platform} по ссылке {test_url}")
+            # Проверяем валидность куки-файла
             if cookie_file_is_valid(platform, cookie_file, test_url=test_url):
                 print(Fore.CYAN + f"Пытаемся использовать куки из файла {cookie_file} для {platform.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Файл куков '{cookie_file}' существует и прошёл проверку. Используем его.")
                 return os.path.normpath(cookie_file)
             else:
+                # Если файл найден, но невалиден — пробуем получить свежие куки из браузера
                 print(f"[!] Файл {cookie_file} найден, но авторизация не удалась. Пробуем свежие куки из браузера…")
                 log_debug(f"Файл {cookie_file} найден, но не прошёл проверку. Переходим к извлечению из браузера.")
     else:
+        # Если файла нет — сразу переходим к извлечению из браузера
         print(Fore.CYAN + f"Принудительный режим: пропускаем проверку и извлекаем куки из браузера." + Style.RESET_ALL)
 
     # 2. Попытка извлечь куки из браузера
@@ -326,6 +388,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
         'firefox': browser_cookie3.firefox,
     }
 
+    # Словарь доменов для каждой платформы
     platform_domains = {
         'youtube':  ['youtube.com', 'google.com'],  # fallback
         'facebook': ['facebook.com'],
@@ -337,20 +400,24 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
     print(Fore.YELLOW + f"Примечание: Для автоматического получения куков из браузера (Chrome/Firefox), "
           f"убедитесь, что он закрыт или неактивен." + Style.RESET_ALL)
 
+    # Получаем список доменов для текущей платформы
     domains = platform_domains.get(platform, [])
     extracted_cj = None
 
+    # Перебираем браузеры для попытки извлечения куков
     for browser in browsers_to_try:
         try:
             print(Fore.GREEN + f"Пытаемся получить куки для {platform.capitalize()} из браузера ({browser})." + Style.RESET_ALL)
             log_debug(f"Попытка получить куки для {platform.capitalize()} из браузера: {browser}")
 
+            # Перебираем домены, пробуем получить куки
             for domain in domains:
                 log_debug(f"Пробуем домен {domain} в {browser}")
                 extracted_cj = browser_functions[browser](domain_name=domain)
                 if extracted_cj:
                     break
 
+            # Если удалось получить куки — сохраняем их в файл
             if extracted_cj:
                 print(Fore.GREEN + f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}.")
@@ -362,12 +429,15 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
                     return None
 
         except BrowserCookieError as e:
+            # Ошибка специфична для browser_cookie3 — выводим причину
             print(Fore.RED + f"Не удалось получить куки из браузера ({browser}) для {platform.capitalize()}: {e}" + Style.RESET_ALL)
             log_debug(f"BrowserCookieError при получении куков из {browser} для {platform.capitalize()}:\n{traceback.format_exc()}")
         except Exception as e:
+            # Общая ошибка — выводим причину
             print(Fore.RED + f"Произошла непредвиденная ошибка при попытке получить куки из {browser} для {platform.capitalize()}: {e}" + Style.RESET_ALL)
             log_debug(f"Общая ошибка при получении куков из {browser} для {platform.capitalize()}:\n{traceback.format_exc()}")
 
+    # Если не удалось получить куки ни одним способом — выводим инструкцию для пользователя
     print(Fore.YELLOW + f"Не удалось автоматически получить куки для {platform.capitalize()}. "
                         f"Для загрузки приватных видео {platform.capitalize()}, пожалуйста, "
                         f"экспортируйте куки в файл {cookie_file} вручную (например, с помощью расширения браузера)." + Style.RESET_ALL)
@@ -375,6 +445,9 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
     return None
 
 def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None):
+    """
+    Получает информацию о видео/плейлисте через yt-dlp.
+    """
     log_debug(f"get_video_info: Итоговая платформа: {platform}, URL: {url}")
     ydl_opts = {'quiet': True, 'skip_download': True}
     if platform == "youtube" and ("list=" in url or "/playlist" in url):
@@ -416,6 +489,9 @@ def is_video_unavailable_error(err):
     ])
 
 def safe_get_video_info(url: str, platform: str):
+    """
+    Безопасно получает информацию о видео, пробует разные куки и режимы.
+    """
     cookie_map = {
         "youtube":  COOKIES_YT,
         "facebook": COOKIES_FB,
@@ -505,10 +581,10 @@ def safe_get_video_info(url: str, platform: str):
     log_debug(f"generic: авторизация не удалась даже с cookies.txt для {site_domain}")
     raise DownloadError(f"Не удалось получить рабочие куки для сайта {site_domain}, видео пропущено.")
 
-
 def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
     """
-    Возвращает кортеж:
+    Позволяет выбрать видео- и аудиоформат из списка доступных.
+    Возвращает кортеж с параметрами формата:
         (video_id, audio_id|None,
          desired_ext, video_ext, audio_ext,
          video_codec, audio_codec)
@@ -704,6 +780,11 @@ def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
     )
 
 def ask_and_select_subtitles(info, auto_mode=False):
+    """ 
+    Обрабатывает наличие вложенных и автоматических субтитров, формирует выбор пользователя
+    Запрашивает у пользователя выбор субтитров и их формата.
+    Возвращает словарь с параметрами загрузки субтитров.
+    """
     write_automatic = False
     subtitles_info = info.get('subtitles') or {}
     auto_info = info.get('automatic_captions') or {}
@@ -847,6 +928,10 @@ def ask_and_select_subtitles(info, auto_mode=False):
     }
 
 def select_output_folder(auto_mode=False):
+    """
+    Запрашивает у пользователя папку для сохранения файлов.
+    В автоматическом режиме выбирает папку по умолчанию.
+    """
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
     system = platform.system().lower()
     if auto_mode:
@@ -1004,6 +1089,9 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
                 return new_name  # Введенное имя не существует, используем его
             
 def ask_output_format(default_format, auto_mode=False):
+    """
+    Запрашивает у пользователя желаемый выходной формат файла.
+    """
     formats = ['mp4', 'mkv', 'avi', 'webm']
     print("\n" + Fore.MAGENTA + "Выберите выходной формат:" + Style.RESET_ALL)
     for i, f in enumerate(formats):
@@ -1038,6 +1126,9 @@ def ask_output_format(default_format, auto_mode=False):
         return default_format
 
 def phook(d, last_file_ref):
+    """
+    Хук для yt-dlp: сохраняет имя скачанного файла.
+    """
     if d['status'] == 'finished':
         last_file_ref[0] = d.get('filename')
         log_debug(f"Файл скачан: {last_file_ref[0]}")
@@ -1308,7 +1399,6 @@ def download_video(
             else:
                 raise
 
-
         except Exception as e:
             # Любая другая ошибка – пробрасываем после логирования
             log_debug(f"Непредвиденная ошибка (попытка {attempt}): {e}\n{traceback.format_exc()}")
@@ -1317,6 +1407,9 @@ def download_video(
     return None  # если вышли из цикла без успеха
 
 def save_chapters_to_file(chapters, path):
+    """
+    Сохраняет главы видео в файл ffmetadata для интеграции в MKV.
+    """
     try:
         path = os.path.normpath(path)
         with open(path, "w", encoding="utf-8") as f:
@@ -1338,6 +1431,9 @@ def save_chapters_to_file(chapters, path):
         return False
 
 def parse_args():
+    """
+    Парсит аргументы командной строки.
+    """
     parser = argparse.ArgumentParser(description="Universal Video Downloader", add_help=True)
     parser.add_argument('url', nargs='?', help='Ссылка на видео или плейлист')
     parser.add_argument('--auto', '-a', action='store_true', help='Автоматический режим (не задавать вопросов)')
@@ -1434,8 +1530,10 @@ def parse_selection(selection, total):
         print(Style.RESET_ALL)
     return sorted(result)
 
-# --- Новый приоритет: сначала ищем по format_id, затем fallback ---
 def find_by_format_id(formats, fmt_id, is_video=True):
+    """
+    Ищет формат по format_id среди доступных.
+    """
     for f in formats:
         if f.get('format_id') == fmt_id:
             if is_video and f.get('vcodec') != 'none':
@@ -1444,9 +1542,10 @@ def find_by_format_id(formats, fmt_id, is_video=True):
                 return f
     return None
 
-# Если не найдено — fallback к старой логике
-# --- Улучшенный fallback: bestvideo/bestaudio с совместимыми контейнерами ---
 def get_compatible_exts(ext):
+    """
+    Возвращает совместимые расширения для контейнера.
+    """
     compat = {
         'mp4':  {'mp4', 'm4a'},
         'm4a':  {'mp4', 'm4a'},
@@ -1457,6 +1556,9 @@ def get_compatible_exts(ext):
     return compat.get(ext, {ext})
 
 def find_best_video(formats, ref_ext):
+    """
+    Ищет лучший видеоформат по расширению.
+    """
     # Сначала ищем лучший mp4
     mp4_candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext', '').lower() == 'mp4']
     if mp4_candidates:
@@ -1472,6 +1574,9 @@ def find_best_video(formats, ref_ext):
     return None
 
 def find_best_audio(formats, ref_ext):
+    """
+    Ищет лучший аудиоформат по расширению.
+    """
     compatible_exts = get_compatible_exts(ref_ext)
     candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('ext') in compatible_exts]
     if candidates:
@@ -1481,8 +1586,10 @@ def find_best_audio(formats, ref_ext):
         return max(candidates, key=lambda f: (f.get('abr') or 0))
     return None
 
-# --- Автоматический подбор имени файла, если файл уже существует ---
 def get_unique_filename(base_name, output_path, output_format):
+    """
+    Генерирует уникальное имя файла, если файл уже существует.
+    """
     candidate = f"{base_name}.{output_format}"
     if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
         return base_name
@@ -1494,6 +1601,9 @@ def get_unique_filename(base_name, output_path, output_format):
         idx += 1
 
 def safe_join(base, *paths):
+    """
+    Безопасно объединяет пути, защищает от path-injection.
+    """
     # Собирает путь и проверяет, что он внутри base
     joined = os.path.abspath(os.path.join(base, *paths))
     if os.path.commonpath([joined, base]) != base:
@@ -1588,6 +1698,9 @@ def mux_mkv_with_subs_and_chapters(
         print(Fore.RED + f"Ошибка при muxing: {mux_err}" + Style.RESET_ALL)
 
 def wait_keys(wait_only_enter, enter_pressed, timeout):
+    """
+    Ожидает нажатие клавиши Enter или таймаут, поддерживает паузу по Space.
+    """
     try:
         start_time = time.time()
         last_sec = -1
@@ -1768,6 +1881,9 @@ def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
     return expanded
 
 def has_nested_playlists(pls):
+    """
+    Проверяет, есть ли вложенные плейлисты.
+    """
     return any(pl.get("sub_playlists") for pl in pls)
 
 def collect_playlists(entries, platform, cookie_file_to_use, level=0):
@@ -1824,6 +1940,9 @@ def collect_playlists(entries, platform, cookie_file_to_use, level=0):
     return playlists
 
 def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path=""):
+    """
+    Обрабатывает плейлисты: выводит, спрашивает, запускает скачивание.
+    """
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
         print(Fore.MAGENTA + f"\nНачало обработки плейлиста: {pl_title}" + Style.RESET_ALL)        
@@ -1883,7 +2002,6 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                 video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
                 subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
                 output_format = ask_output_format(desired_ext, auto_mode=False)
-                # Можно добавить обработку глав и субтитров, если нужно
 
                 for idx in selected_indexes:
                     entry = pl["videos"][idx - 1]
@@ -1974,6 +2092,9 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
             process_playlists(pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title))
 
 def print_playlists_tree(playlists, level=0):
+    """
+    Выводит дерево плейлистов с вложенностью.
+    """
     log_debug(f"print_playlists_tree: level={level}, playlists_count={len(playlists)}")
     for pl in playlists:
         indent = "  " * level
@@ -2229,11 +2350,11 @@ def download_tasks(tasks):
 def is_youtube_channel_url(url: str) -> bool:
     """
     Проверяет, является ли ссылка ссылкой на канал YouTube (не на видео, не на плейлист).
+    https://www.youtube.com/@username
+    https://www.youtube.com/channel/UC...
+    https://www.youtube.com/c/...
+    но не содержит /playlists, /videos, /shorts, /live, /community и т.п.
     """
-    # https://www.youtube.com/@username
-    # https://www.youtube.com/channel/UC...
-    # https://www.youtube.com/c/...
-    # но не содержит /playlists, /videos, /shorts, /live, /community и т.п.
     channel_patterns = [
         r'^https?://(www\.)?youtube\.com/@[^/]+/?$',
         r'^https?://(www\.)?youtube\.com/channel/[^/]+/?$',
@@ -2260,11 +2381,17 @@ def get_youtube_playlists_url(channel_url: str) -> str:
         return channel_url + '/playlists'
 
 def parse_time_to_ms(t: str) -> int:
+    """
+    Преобразует строку времени SRT в миллисекунды.
+    """
     h, m, s_ms = t.split(":")
     s, ms = s_ms.split(",")
     return (int(h)*3600 + int(m)*60 + int(s)) * 1000 + int(ms)
 
 def ms_to_srt_time(ms: int) -> str:
+    """
+    Преобразует миллисекунды в строку времени SRT.
+    """
     if ms < 0:
         ms = 0
     h = ms // 3600000
@@ -2276,6 +2403,9 @@ def ms_to_srt_time(ms: int) -> str:
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 def parse_srt(path: str) -> List[Caption]:
+    """
+    Парсит SRT-файл, возвращает список Caption.
+    """
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
     caps: List[Caption] = []
@@ -2292,6 +2422,9 @@ def parse_srt(path: str) -> List[Caption]:
     return caps
 
 def normalize_by_pairs_strict(caps: List[Caption]) -> List[Caption]:
+    """
+    Нормализует субтитры: убирает перекрытия, объединяет блоки.
+    """
     out: List[Caption] = []
     i = 0
     n = len(caps)
@@ -2345,11 +2478,17 @@ def normalize_by_pairs_strict(caps: List[Caption]) -> List[Caption]:
     return out
 
 def write_srt(path: str, caps: List[Caption]):
+    """
+    Записывает список Caption в SRT-файл.
+    """
     with open(path, "w", encoding="utf-8") as f:
         for i, c in enumerate(caps, start=1):
             f.write(f"{i}\n{ms_to_srt_time(c.start)} --> {ms_to_srt_time(c.end)}\n{c.text}\n\n")
 
 def normalize_srt_file(inp: str, overwrite: bool = True, backup: bool = False):
+    """
+    Нормализует SRT-файл, создаёт резервную копию при необходимости.
+    """
     if not os.path.exists(inp):
         print(f"Input file not found: {inp}")
         return
@@ -2369,6 +2508,9 @@ def normalize_srt_file(inp: str, overwrite: bool = True, backup: bool = False):
     print(f"Processed {inp} -> {target} ({len(norm)} blocks)")
 
 def main():
+    """
+    Главная функция: запускает обработку, парсинг, скачивание.
+    """
     global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
     global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
     global USER_SELECTED_OUTPUT_FORMAT, USER_SELECTED_CHAPTER_FILENAME, USER_SELECTED_OUTPUT_NAME, USER_SELECTED_OUTPUT_PATH
@@ -2402,11 +2544,7 @@ def main():
         print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
     log_debug(f"Введена ссылка: {raw_url}")
 
-    # Теперь auto_mode, args.bestvideo, args.bestaudio можно использовать в логике ниже
-
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
-    subtitle_files = []
-    subtitle_format = 'srt'
     subs_to_integrate_langs = []
     integrate_subs = False
     keep_sub_files = True
@@ -2443,7 +2581,7 @@ def main():
             info_playlists = None
             section_playlists = []
 
-            # --- Новый порядок: сперва плейлисты, если ссылка на /playlists ---
+            # --- Сперва плейлисты, если ссылка на /playlists ---
             if is_youtube_playlists_url(url):
                 print(Fore.YELLOW + "\nОбнаружена ссылка на раздел плейлистов канала YouTube." + Style.RESET_ALL)
                 playlists_url = get_youtube_playlists_url(channel_url)
