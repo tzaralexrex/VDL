@@ -162,20 +162,22 @@ init(autoreset=True)  # инициализация colorama и автомати�
 
 debug_file_initialized = False
 
-def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
+def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
     """
-    Быстро проверяет, «жив» ли куки-файл.
-    Для YouTube берём главную страницу, для Facebook — тоже.
-    Возвращает True, если запрос прошёл без ошибки авторизации.
+    Проверяет, «жив» ли куки-файл по реальной ссылке (например, на видео).
+    Если test_url не задан, используется главная страница платформы.
     """
-    test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
+    if not test_url:
+        test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
     try:
         opts = {
             "quiet": True,
             "skip_download": True,
             "cookiefile": cookie_path,
-            "extract_flat": True,
         }
+        # extract_flat только для YouTube-плейлистов!
+        if platform == "youtube":
+            opts["extract_flat"] = True
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(test_url, download=False)
         return True
@@ -183,7 +185,7 @@ def cookie_file_is_valid(platform: str, cookie_path: str) -> bool:
         return False
     except Exception:
         return False
-
+    
 def detect_ffmpeg_path():
     script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     local_path = os.path.normpath(os.path.join(script_dir, "ffmpeg.exe"))
@@ -223,6 +225,9 @@ def log_debug(message):
 def clean_url_by_platform(platform: str, url: str) -> str:
     try:
         if platform == 'facebook':
+            # Если ссылка уже содержит /watch/?v=..., не трогать!
+            if re.search(r'/watch/\?v=\d+', url):
+                return url
             fb_patterns = [
                 r'/videos/(\d+)',
                 r'v=(\d+)',
@@ -292,7 +297,7 @@ def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
 
-def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: bool = False) -> str | None:
+def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, force_browser: bool = False) -> str | None:
     """
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
@@ -301,15 +306,18 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
     # 1. Попытка загрузить куки из существующего файла
     if os.path.exists(cookie_file):
         if not force_browser:
-            if cookie_file_is_valid(platform, cookie_file):
+            # Передаём test_url — реальную ссылку (если есть)
+            test_url = url
+            log_debug(f"[LOG] Проверка куки-файла: {cookie_file} для платформы {platform} по ссылке {test_url}")
+            if cookie_file_is_valid(platform, cookie_file, test_url=test_url):
                 print(Fore.CYAN + f"Пытаемся использовать куки из файла {cookie_file} для {platform.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Файл куков '{cookie_file}' существует и прошёл проверку. Используем его.")
                 return os.path.normpath(cookie_file)
             else:
                 print(f"[!] Файл {cookie_file} найден, но авторизация не удалась. Пробуем свежие куки из браузера…")
                 log_debug(f"Файл {cookie_file} найден, но не прошёл проверку. Переходим к извлечению из браузера.")
-        else:
-            print(Fore.CYAN + f"Принудительный режим: пропускаем проверку и извлекаем куки из браузера." + Style.RESET_ALL)
+    else:
+        print(Fore.CYAN + f"Принудительный режим: пропускаем проверку и извлекаем куки из браузера." + Style.RESET_ALL)
 
     # 2. Попытка извлечь куки из браузера
     browsers_to_try = ['chrome', 'firefox']
@@ -367,7 +375,10 @@ def get_cookies_for_platform(platform: str, cookie_file: str, force_browser: boo
     return None
 
 def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None):
-    ydl_opts = {'quiet': True, 'skip_download': True, 'extract_flat': True}
+    log_debug(f"get_video_info: Итоговая платформа: {platform}, URL: {url}")
+    ydl_opts = {'quiet': True, 'skip_download': True}
+    if platform == "youtube" and ("list=" in url or "/playlist" in url):
+        ydl_opts['extract_flat'] = True
     if cookie_file_path:
         ydl_opts['cookiefile'] = cookie_file_path
         log_debug(f"get_video_info: Используем cookiefile: {cookie_file_path}")
@@ -376,12 +387,21 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
         log_debug(f"get_video_info: Пробуем cookiesfrombrowser: {cookiesfrombrowser}")
 
     log_debug(f"get_video_info: Запрос информации для URL: {url} с опциями: {ydl_opts}")
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        log_debug(f"get_video_info: Получена информация о видео. Title: {info.get('title', 'N/A')}, ID: {info.get('id', 'N/A')}")
+
+    try:
+        log_debug("get_video_info: Перед вызовом ydl.extract_info")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        log_debug("get_video_info: После вызова ydl.extract_info")
+        extractor = info.get('extractor', 'unknown')
+        info_type = info.get('_type', 'video')
+        log_debug(f"get_video_info: extractor={extractor}, _type={info_type}, title={info.get('title', 'N/A')}, id={info.get('id', 'N/A')}")
         if cookie_file_path:
             info['__cookiefile__'] = cookie_file_path
         return info
+    except Exception as e:
+        log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
+        raise
 
 def is_video_unavailable_error(err):
     """
@@ -407,7 +427,7 @@ def safe_get_video_info(url: str, platform: str):
     # Платформы, которые явно поддерживаются
     if platform in cookie_map:
         cookie_path = cookie_map[platform]
-        current_cookie = get_cookies_for_platform(platform, cookie_path)
+        current_cookie = get_cookies_for_platform(platform, cookie_path, url)
 
         for attempt in ("file", "browser", "none"):
             try:
@@ -418,7 +438,7 @@ def safe_get_video_info(url: str, platform: str):
                 if not need_login:
                     raise
                 if attempt == "file":
-                    current_cookie = get_cookies_for_platform(platform, cookie_path, force_browser=True)
+                    current_cookie = get_cookies_for_platform(platform, cookie_path, url=url, force_browser=True)
                 elif attempt == "browser":
                     current_cookie = None
                 else:
@@ -1277,7 +1297,7 @@ def download_video(
                     "vk": COOKIES_VK,
                 }
                 if platform in cookie_map:
-                    new_cookie_file = get_cookies_for_platform(platform, cookie_map[platform])
+                    new_cookie_file = get_cookies_for_platform(platform, cookie_map[platform], url)
                     if new_cookie_file:
                         cookie_file_path = new_cookie_file
                         ydl_opts['cookiefile'] = cookie_file_path
@@ -2403,6 +2423,7 @@ def main():
 
     try:
         platform, url = extract_platform_and_url(raw_url)
+        log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
 
         if platform == "youtube" and (is_youtube_channel_url(url) or is_youtube_playlists_url(url)):
             selected_video_ids = {}
