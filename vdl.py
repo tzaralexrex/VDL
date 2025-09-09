@@ -488,7 +488,7 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
         except Exception as e:
             log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
             raise
-        
+
 def is_video_unavailable_error(err):
     """
     Проверяет, относится ли ошибка к недоступности видео (премьера, удалено, скрыто и т.п.)
@@ -2558,16 +2558,39 @@ def main():
     args = parse_args()
     auto_mode = args.auto
     raw_url = args.url
-    if not raw_url:
-        # Ждём непустого ввода
-        while True:
+    while True:
+        if not raw_url:
             raw_url = input(Fore.CYAN + "Введите ссылку: " + Style.RESET_ALL).strip()
-            if raw_url:
-                break
-    else:
-        print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
-    log_debug(f"Введена ссылка: {raw_url}")
+            if not raw_url:
+                continue
+        else:
+            print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
+        log_debug(f"Введена ссылка: {raw_url}")
 
+        try:
+            platform, url = extract_platform_and_url(raw_url)
+            log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
+            # --- ДОБАВЛЕНО: предварительная проверка валидности ссылки ---
+            try:
+                _ = safe_get_video_info(url, platform)
+            except DownloadError as e:
+                err_text = str(e).lower()
+                if "not a valid url" in err_text or "is not a valid url" in err_text:
+                    print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
+                    raw_url = None
+                    continue
+                else:
+                    raise
+            break  # если ошибок нет — выходим из цикла
+        except DownloadError as e:
+            err_text = str(e).lower()
+            if "not a valid url" in err_text or "is not a valid url" in err_text:
+                print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
+                raw_url = None
+                continue
+            else:
+                raise
+            
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
     subs_to_integrate_langs = []
     integrate_subs = False
@@ -2584,9 +2607,7 @@ def main():
     saved_list_path = None
 
     try:
-        platform, url = extract_platform_and_url(raw_url)
-        log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
-
+        # platform и url уже определены выше!
         if platform == "youtube" and (is_youtube_channel_url(url) or is_youtube_playlists_url(url)):
             selected_video_ids = {}
 
