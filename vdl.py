@@ -461,21 +461,34 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
 
     log_debug(f"get_video_info: Запрос информации для URL: {url} с опциями: {ydl_opts}")
 
-    try:
-        log_debug("get_video_info: Перед вызовом ydl.extract_info")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        log_debug("get_video_info: После вызова ydl.extract_info")
-        extractor = info.get('extractor', 'unknown')
-        info_type = info.get('_type', 'video')
-        log_debug(f"get_video_info: extractor={extractor}, _type={info_type}, title={info.get('title', 'N/A')}, id={info.get('id', 'N/A')}")
-        if cookie_file_path:
-            info['__cookiefile__'] = cookie_file_path
-        return info
-    except Exception as e:
-        log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
-        raise
-
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            log_debug("get_video_info: Перед вызовом ydl.extract_info")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            log_debug("get_video_info: После вызова ydl.extract_info")
+            extractor = info.get('extractor', 'unknown')
+            info_type = info.get('_type', 'video')
+            log_debug(f"get_video_info: extractor={extractor}, _type={info_type}, title={info.get('title', 'N/A')}, id={info.get('id', 'N/A')}")
+            if cookie_file_path:
+                info['__cookiefile__'] = cookie_file_path
+            return info
+        except DownloadError as e:
+            err_text = str(e)
+            retriable = any(key in err_text for key in (
+                "Got error:", "read,", "Read timed out", "retry", "HTTP Error 5", "HTTP Error 429", "Too Many Requests"
+            ))
+            log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
+            if retriable and attempt < MAX_RETRIES:
+                print(Fore.YELLOW + f"Ошибка получения информации о видео (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
+                time.sleep(5)
+                continue
+            else:
+                raise
+        except Exception as e:
+            log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
+            raise
+        
 def is_video_unavailable_error(err):
     """
     Проверяет, относится ли ошибка к недоступности видео (премьера, удалено, скрыто и т.п.)
@@ -1231,9 +1244,20 @@ def download_video(
                 "Got error:", "read,", "Read timed out", "retry", "HTTP Error 5",
             ))
 
+            # --- Повтор для ошибок загрузки субтитров ---
+            is_subtitle_error = "subtitles" in err_text.lower() or "caption" in err_text.lower()
+            retriable_sub = any(key in err_text for key in (
+                "HTTP Error 429", "Too Many Requests", "HTTP Error 5", "timed out", "connection", "retry"
+            ))
+
             log_debug(f"DownloadError: {err_text} (retriable={retriable})")
 
-            # --- Новый блок: обработка ошибки HTTP 416 ---
+            if is_subtitle_error and retriable_sub and attempt < MAX_RETRIES:
+                print(Fore.YELLOW + f"Ошибка загрузки субтитров (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
+                time.sleep(5)
+                continue
+
+            # --- Обработка ошибки HTTP 416 ---
             if "HTTP Error 416" in err_text or "Requested range not satisfiable" in err_text:
                 # Попробуем найти .part-файл и сравнить его размер с ожидаемым
                 part_file = None
