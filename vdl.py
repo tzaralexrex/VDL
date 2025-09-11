@@ -216,18 +216,18 @@ def detect_ffmpeg_path():
     Возвращает путь к ffmpeg или None.
     """
     # Получаем путь к папке, где находится скрипт
-    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    script_dir = Path(sys.argv[0]).resolve().parent
     # Формируем локальный путь к ffmpeg.exe
-    local_path = os.path.normpath(os.path.join(script_dir, "ffmpeg.exe"))
+    local_path = script_dir / "ffmpeg.exe"
     log_debug(f"Поиск ffmpeg: Проверяем локальный путь: {local_path}")
     # Проверяем наличие ffmpeg.exe в локальной папке
-    if os.path.isfile(local_path):
+    if Path(local_path).is_file():
         log_debug(f"FFmpeg найден по локальному пути: {local_path}")
         return local_path
     # Если не найден — ищем в системном PATH
     system_path = which("ffmpeg")
     log_debug(f"Поиск ffmpeg: Проверяем системный PATH: {system_path}")
-    if system_path and os.path.isfile(system_path):
+    if system_path and Path(system_path).is_file():
         log_debug(f"FFmpeg найден в системном PATH: {system_path}")
         return system_path
     # Если не найден нигде — возвращаем None
@@ -286,7 +286,7 @@ def clean_url_by_platform(platform: str, url: str) -> str:
                     video_id = match.group(1)
                     return f"https://m.facebook.com/watch/?v={video_id}&_rdr"
             # Если не удалось распознать — выбрасываем ошибку
-            raise ValueError(Fore.RED + "Не удалось распознать ID видео Facebook" + Style.RESET_ALL)
+            raise ValueError(f"{Fore.RED}Не удалось распознать ID видео Facebook{Style.RESET_ALL}")
 
         # Для VK — приводим ссылку к стандартному виду
         elif platform == 'vk':
@@ -357,13 +357,28 @@ def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
 
+def is_valid_url_for_platform(url, platform):
+    """
+    Проверяет, является ли ссылка валидной для yt-dlp (без скачивания).
+    Возвращает True, если ссылка корректна, иначе False.
+    """
+    try:
+        safe_get_video_info(url, platform)
+        return True
+    except DownloadError as e:
+        err_text = str(e).lower()
+        if "not a valid url" in err_text or "is not a valid url" in err_text:
+            log_debug(f"Невалидная ссылка: {url} для платформы {platform}")
+            return False
+        raise
+
 def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, force_browser: bool = False) -> str | None:
     """
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
     """
     # 1. Попытка загрузить куки из существующего файла
-    if os.path.exists(cookie_file):
+    if Path(cookie_file).exists():
         if not force_browser:
             # Передаём test_url — реальную ссылку (если есть)
             test_url = url
@@ -372,7 +387,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
             if cookie_file_is_valid(platform, cookie_file, test_url=test_url):
                 print(Fore.CYAN + f"Пытаемся использовать куки из файла {cookie_file} для {platform.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Файл куков '{cookie_file}' существует и прошёл проверку. Используем его.")
-                return os.path.normpath(cookie_file)
+                return str(Path(cookie_file).resolve())
             else:
                 # Если файл найден, но невалиден — пробуем получить свежие куки из браузера
                 print(f"[!] Файл {cookie_file} найден, но авторизация не удалась. Пробуем свежие куки из браузера…")
@@ -422,7 +437,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
                 print(Fore.GREEN + f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Куки для {platform.capitalize()} успешно получены из {browser.capitalize()}.")
                 if save_cookies_to_netscape_file(extracted_cj, cookie_file):
-                    return os.path.normpath(cookie_file)
+                    return str(Path(cookie_file).resolve())
                 else:
                     print(Fore.RED + "Не удалось сохранить извлеченные куки в файл. Продолжаем без них." + Style.RESET_ALL)
                     log_debug("Не удалось сохранить извлеченные куки в файл.")
@@ -948,8 +963,8 @@ def select_output_folder(auto_mode=False):
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
     system = platform.system().lower()
     if auto_mode:
-        folder = os.path.abspath(InitialDir)
-        os.makedirs(folder, exist_ok=True)
+        folder = Path(InitialDir).resolve()
+        folder.mkdir(exist_ok=True)
         print(Fore.GREEN + f"Автоматически выбрана папка: {folder}" + Style.RESET_ALL)
         return folder
     if system == "windows" and tk is not None and filedialog is not None:
@@ -969,7 +984,7 @@ def select_output_folder(auto_mode=False):
             # Возвращаем фокус обратно к окну
             user32.SetForegroundWindow(foreground_window)
             if folder:
-                return os.path.normpath(folder)
+                return Path(folder).resolve()
             else:
                 print(Fore.YELLOW + "Папка не выбрана. Попробуйте снова." + Style.RESET_ALL)
         except Exception as e:
@@ -978,18 +993,19 @@ def select_output_folder(auto_mode=False):
     # Fallback для не-Windows или если tkinter не работает
     while True:
         if auto_mode:
-            folder = os.path.abspath(InitialDir)
-            os.makedirs(folder, exist_ok=True)
+            folder = Path(InitialDir).resolve()
+            folder.mkdir(exist_ok=True)
             print(Fore.GREEN + f"Автоматически выбрана папка: {folder}" + Style.RESET_ALL)
             return folder
         folder = input(Fore.CYAN + "Введите путь к папке для сохранения: " + Style.RESET_ALL).strip()
         if not folder:
             print(Fore.YELLOW + "Путь не введён. Попробуйте снова." + Style.RESET_ALL)
             continue
-        if not os.path.isdir(folder):
+        folder_path = Path(folder).resolve()
+        if not folder_path.is_dir():
             print(Fore.RED + f"Папка '{folder}' не существует. Попробуйте снова." + Style.RESET_ALL)
             continue
-        return os.path.normpath(folder)
+        return folder_path
 
 def ask_output_filename(default_name, output_path, output_format, auto_mode=False):
     """
@@ -1011,7 +1027,7 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
             log_debug(f"Не удалось скопировать имя файла в буфер обмена: {e}")
 
     while True:
-        proposed_full_path = os.path.normpath(os.path.join(output_path, current_name + '.' + output_format))
+        proposed_full_path = Path(output_path) / f"{current_name}.{output_format}"
         log_debug(f"Проверка имени файла: {proposed_full_path}")
 
         print(f"\n{Fore.MAGENTA}Предлагаемое имя файла: {Fore.GREEN}{current_name}.{output_format}{Style.RESET_ALL}")
@@ -1021,12 +1037,12 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
 
         if auto_mode:
             # Если файл существует — добавить индекс, иначе использовать текущее имя
-            if os.path.exists(proposed_full_path):
+            if Path(proposed_full_path).exists():
                 idx = 1
                 while True:
                     indexed_name = f"{current_name}_{idx}"
-                    indexed_full_path = os.path.normpath(os.path.join(output_path, indexed_name + '.' + output_format))
-                    if not os.path.exists(indexed_full_path):
+                    indexed_full_path = Path(output_path) / f"{indexed_name}.{output_format}"
+                    if not indexed_full_path.exists():
                         return indexed_name
                     idx += 1
             else:
@@ -1035,7 +1051,7 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
         name_input = input(Fore.CYAN + "Введите имя файла (Enter — оставить по умолчанию): " + Style.RESET_ALL).strip()
 
         if not name_input:  # Пользователь нажал Enter, использует предложенное имя
-            if os.path.exists(proposed_full_path):
+            if Path(proposed_full_path).exists():
                 print(Fore.YELLOW + f"Файл '{current_name}.{output_format}' уже существует." + Style.RESET_ALL)
                 log_debug(f"Файл '{proposed_full_path}' существует. Запрос действия.")
                 choice = input(Fore.CYAN + "Перезаписать (0), выбрать другое имя (1), или добавить индекс (2)? (по умолчанию: 2): " + Style.RESET_ALL).strip()
@@ -1059,9 +1075,9 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
                     idx = 1
                     while True:
                         indexed_name = f"{current_name}_{idx}"
-                        indexed_full_path = os.path.normpath(os.path.join(output_path, indexed_name + '.' + output_format))
+                        indexed_full_path = Path(output_path) / f"{indexed_name}.{output_format}"
                         log_debug(f"Выбрано: добавить индекс. Проверка индексированного имени: {indexed_full_path}")
-                        if not os.path.exists(indexed_full_path):
+                        if not indexed_full_path.exists():
                             print(Fore.GREEN + f"Файл будет сохранен как '{indexed_name}.{output_format}'." + Style.RESET_ALL)
                             log_debug(f"Выбрано: использовать индексированное имя '{indexed_name}'.")
                             return indexed_name
@@ -1071,9 +1087,9 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
                 return current_name  # Файл не существует, можно использовать это имя
         else:  # Пользователь ввел новое имя
             new_name = name_input
-            new_full_path = os.path.normpath(os.path.join(output_path, new_name + '.' + output_format))
+            new_full_path = Path(output_path) / f"{new_name}.{output_format}"
             log_debug(f"Пользователь ввел новое имя: '{new_name}'. Проверка: {new_full_path}")
-            if os.path.exists(new_full_path):
+            if new_full_path.exists():
                 print(Fore.YELLOW + f"Файл '{new_full_path}' уже существует." + Style.RESET_ALL)
                 log_debug(f"Новое имя '{new_full_path}' уже существует. Запрос действия.")
                 choice = input(Fore.CYAN + "Перезаписать (0), выбрать другое имя (1), или добавить индекс (2)? (по умолчанию: 2): " + Style.RESET_ALL).strip()
@@ -1090,9 +1106,9 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
                     idx = 1
                     while True:
                         indexed_name = f"{new_name}_{idx}"
-                        indexed_full_path = os.path.normpath(os.path.join(output_path, indexed_name + '.' + output_format))
+                        indexed_full_path = Path(output_path) / f"{indexed_name}.{output_format}"
                         log_debug(f"Выбрано: добавить индекс. Проверка индексированного имени: {indexed_full_path}")
-                        if not os.path.exists(indexed_full_path):
+                        if not indexed_full_path.exists():
                             print(Fore.GREEN + f"Файл будет сохранен как '{indexed_name}.{output_format}'." + Style.RESET_ALL)
                             log_debug(f"Выбрано: использовать индексированное имя '{indexed_name}'.")
                             return indexed_name
@@ -1156,7 +1172,7 @@ def download_video(
     Скачивает (и, при необходимости, сливает) выбранные потоки.
     Возвращает путь к итоговому файлу либо None.
     """
-    full_tmpl = os.path.normpath(os.path.join(output_path, output_name + '.%(ext)s'))
+    full_tmpl = str(Path(output_path) / f"{output_name}.%(ext)s")
     log_debug(f"yt-dlp outtmpl: {full_tmpl}")
 
     ffmpeg_path = detect_ffmpeg_path()
@@ -1215,7 +1231,7 @@ def download_video(
         ydl_opts.update(subtitle_options)
 
     # ---------------- 3. progress-hook & подготовка --------------------
-    os.makedirs(output_path, exist_ok=True)
+    Path(output_path).mkdir(parents=True, exist_ok=True)
     last_file = [None]
     ydl_opts['progress_hooks'] = [lambda d: phook(d, last_file)]
  
@@ -1228,13 +1244,13 @@ def download_video(
 
             # ---- поиск итогового файла ----
             candidate = last_file[0] or full_tmpl.replace('%(ext)s', merge_format)
-            if os.path.isfile(candidate):
+            if Path(candidate).is_file():
                 return candidate
 
             base_low = output_name.lower()
-            for fn in os.listdir(output_path):
-                if fn.lower().startswith(base_low) and fn.lower().endswith('.' + merge_format):
-                    return os.path.normpath(os.path.join(output_path, fn))
+            for fn in Path(output_path).iterdir():
+                if fn.name.lower().startswith(base_low) and fn.name.lower().endswith(f'.{merge_format}'):
+                    return str(fn.resolve())
 
             return None
 
@@ -1262,7 +1278,7 @@ def download_video(
                 # Попробуем найти .part-файл и сравнить его размер с ожидаемым
                 part_file = None
                 final_file = None
-                base_path = os.path.normpath(os.path.join(output_path, output_name))
+                base_path = Path(output_path) / output_name
                 found_parts = []
                 # Возможные расширения
                 ext_try = None
@@ -1270,7 +1286,7 @@ def download_video(
                     # Стандартный вариант
                     candidate_part = base_path + f".{ext_try}.part"
                     candidate_final = base_path + f".{ext_try}"
-                    if os.path.exists(candidate_part):
+                    if Path(candidate_part).exists():
                         part_file = candidate_part
                         final_file = candidate_final
                         found_parts.append(candidate_part)
@@ -1278,7 +1294,7 @@ def download_video(
                     # Вариант с суффиксом .f{video_id}
                     candidate_part2 = base_path + f".f{video_id}.{ext_try}.part"
                     candidate_final2 = base_path + f".f{video_id}.{ext_try}"
-                    if os.path.exists(candidate_part2):
+                    if Path(candidate_part2).exists():
                         part_file = candidate_part2
                         final_file = candidate_final2
                         found_parts.append(candidate_part2)
@@ -1287,14 +1303,14 @@ def download_video(
                     if audio_id:
                         candidate_part3 = base_path + f".f{audio_id}.{ext_try}.part"
                         candidate_final3 = base_path + f".f{audio_id}.{ext_try}"
-                        if os.path.exists(candidate_part3):
+                        if Path(candidate_part3).exists():
                             part_file = candidate_part3
                             final_file = candidate_final3
                             found_parts.append(candidate_part3)
                             break
                 log_debug(f"Проверены .part-файлы: {found_parts}")
                 if part_file and final_file:
-                    part_size = os.path.getsize(part_file)
+                    part_size = Path(part_file).stat().st_size
                     log_debug(f"Найден .part-файл: {part_file}, размер: {part_size}")
                     try:
                         info = get_video_info(url, platform, cookie_file_path)
@@ -1315,7 +1331,7 @@ def download_video(
                             for ext_try_a in ("m4a", "mp3", "webm", "aac"):
                                 candidate_audio_part = base_path + f".f{audio_id}.{ext_try_a}.part"
                                 candidate_audio_final = base_path + f".f{audio_id}.{ext_try_a}"
-                                if os.path.exists(candidate_audio_part):
+                                if Path(candidate_audio_part).exists():
                                     audio_part_file = candidate_audio_part
                                     audio_final_file = candidate_audio_final
                                     for f in formats:
@@ -1324,18 +1340,18 @@ def download_video(
                                             break
                                     break
                             if audio_part_file:
-                                audio_part_size = os.path.getsize(audio_part_file)
+                                audio_part_size = Path(audio_part_file).stat().st_size
                                 audio_ok = (audio_expected_size and audio_part_size >= audio_expected_size) or (not audio_expected_size and audio_part_size > 5 * 1024 * 1024)
 
                         # --- Переименовываем видео и аудио, если оба скачаны ---
                         video_ok = (expected_size and part_size >= expected_size) or (not expected_size and part_size > 10 * 1024 * 1024)
                         if video_ok and audio_ok:
                             if part_file is not None and final_file is not None:
-                                os.rename(part_file, final_file)
+                                Path(part_file).rename(final_file)
                                 log_debug(f"Переименован видеофайл: {part_file} → {final_file}")
                                 print(Fore.YELLOW + f"\nФайл {part_file} был скачан полностью, переименован в {final_file}." + Style.RESET_ALL)
                             if audio_id and audio_part_file is not None and audio_final_file is not None:
-                                os.rename(audio_part_file, audio_final_file)
+                                Path(audio_part_file).rename(audio_final_file)
                                 log_debug(f"Переименован аудиофайл: {audio_part_file} → {audio_final_file}")
                                 print(Fore.YELLOW + f"\nАудиофайл {audio_part_file} был скачан полностью, переименован в {audio_final_file}." + Style.RESET_ALL)
                             # После переименования НЕ возвращаем, а продолжаем выполнение!
@@ -1357,22 +1373,22 @@ def download_video(
                 log_debug("Попытка устранить блокировку .part-файла.")
                 try:
                     part_file = None
-                    base_path = os.path.normpath(os.path.join(output_path, output_name))
+                    base_path = Path(output_path) / output_name
                     for ext_try in ("mp4", "mkv", "webm", "avi", "m4a", "mp3"):
                         # Стандартный вариант
                         part_candidate = base_path + f".{ext_try}.part"
-                        if os.path.exists(part_candidate):
+                        if Path(part_candidate).exists():
                             part_file = part_candidate
                             break
                         # Вариант с суффиксом .f{video_id}
                         part_candidate2 = base_path + f".f{video_id}.{ext_try}.part"
-                        if os.path.exists(part_candidate2):
+                        if Path(part_candidate2).exists():
                             part_file = part_candidate2
                             break
                         # Вариант с суффиксом .f{audio_id}
                         if audio_id:
                             part_candidate3 = base_path + f".f{audio_id}.{ext_try}.part"
-                            if os.path.exists(part_candidate3):
+                            if Path(part_candidate3).exists():
                                 part_file = part_candidate3
                                 break
 
@@ -1381,7 +1397,7 @@ def download_video(
                             for proc in psutil.process_iter(['pid', 'name']):
                                 try:
                                     for f in proc.open_files():
-                                        if os.path.samefile(f.path, part_file):
+                                        if Path(f.path).resolve() == Path(part_file).resolve():
                                             pname = proc.name()
                                             pid = proc.pid
                                             log_debug(f"Файл блокирует: {pname} (PID {pid})")
@@ -1394,7 +1410,7 @@ def download_video(
 
                         # Попробуем удалить файл (на свой страх и риск)
                         try:
-                            os.remove(part_file)
+                            Path(part_file).unlink()
                             log_debug("Удалили .part-файл.")
                         except Exception as del_err:
                             log_debug(f"Не удалось удалить файл: {del_err}")
@@ -1435,7 +1451,7 @@ def save_chapters_to_file(chapters, path):
     Сохраняет главы видео в файл ffmetadata для интеграции в MKV.
     """
     try:
-        path = os.path.normpath(path)
+        path = str(Path(path).resolve())
         with open(path, "w", encoding="utf-8") as f:
             f.write(";FFMETADATA1\n")
             for i, ch in enumerate(chapters, 1):
@@ -1550,7 +1566,7 @@ def parse_selection(selection, total):
     if errors:
         print(Fore.YELLOW + "Внимание! Обнаружены ошибки в выборе номеров:")
         for err in errors:
-            print("  - " + err)
+            print(f"  - {err}")
         print(Style.RESET_ALL)
     return sorted(result)
 
@@ -1614,13 +1630,13 @@ def get_unique_filename(base_name, output_path, output_format):
     """
     Генерирует уникальное имя файла, если файл уже существует.
     """
-    candidate = f"{base_name}.{output_format}"
-    if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
+    candidate = Path(output_path) / f"{base_name}.{output_format}"
+    if not candidate.exists():
         return base_name
     idx = 2
     while True:
-        candidate = f"{base_name}_{idx}.{output_format}"
-        if not os.path.exists(os.path.normpath(os.path.join(output_path, candidate))):
+        candidate_path = Path(output_path) / f"{base_name}_{idx}.{output_format}"
+        if not candidate_path.exists():
             return f"{base_name}_{idx}"
         idx += 1
 
@@ -1629,10 +1645,10 @@ def safe_join(base, *paths):
     Безопасно объединяет пути, защищает от path-injection.
     """
     # Собирает путь и проверяет, что он внутри base
-    joined = os.path.abspath(os.path.join(base, *paths))
-    if os.path.commonpath([joined, base]) != base:
+    joined = Path(base).resolve().joinpath(*paths).resolve()
+    if not str(joined).startswith(str(Path(base).resolve())):
         raise ValueError(f"Попытка path-injection: {joined} вне {base}")
-    return joined
+    return str(joined)
 
 def mux_mkv_with_subs_and_chapters(
     downloaded_file, output_name, output_path,
@@ -1655,8 +1671,8 @@ def mux_mkv_with_subs_and_chapters(
         raise ValueError("Некорректное имя файла после очистки (path-injection protection)")
 
     # Проверяем, что output_path — абсолютный путь
-    output_path_abs = os.path.abspath(output_path)
-    if not os.path.isdir(output_path_abs):
+    output_path_abs = Path(output_path).resolve()
+    if not output_path_abs.is_dir():
         raise ValueError("Папка для сохранения не существует или недоступна")
 
     ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
@@ -1668,11 +1684,11 @@ def mux_mkv_with_subs_and_chapters(
         sub_fmt = subtitle_download_options.get('subtitlesformat', 'srt')
         for lang in subs_to_integrate_langs:
             sub_file = safe_join(sub_dir, f"{safe_output_name}.{lang}.{sub_fmt}")
-            if os.path.exists(sub_file):
+            if Path(sub_file).exists():
                 input_files.append(f'-i "{sub_file}"')
                 sub_files.append(sub_file)
 
-    if integrate_chapters and chapter_filename and os.path.exists(safe_join(output_path_abs, chapter_filename)):
+    if integrate_chapters and chapter_filename and Path(safe_join(output_path_abs, chapter_filename)).exists():
         input_files.append(f'-i "{safe_join(output_path_abs, chapter_filename)}"')
 
     ffmpeg_cmd += input_files
@@ -1681,7 +1697,7 @@ def mux_mkv_with_subs_and_chapters(
         for sub_idx, lang in enumerate(subs_to_integrate_langs):
             ffmpeg_cmd += [f'-metadata:s:s:{sub_idx}', f'language={lang}']
 
-    if integrate_chapters and chapter_filename and os.path.exists(safe_join(output_path_abs, chapter_filename)):
+    if integrate_chapters and chapter_filename and Path(safe_join(output_path_abs, chapter_filename)).exists():
         ffmpeg_cmd += ['-map_metadata', str(len(input_files)-1)]
 
     ffmpeg_cmd += ['-map', '0']
@@ -1697,22 +1713,24 @@ def mux_mkv_with_subs_and_chapters(
         print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
         try:
             orig_file = safe_join(output_path_abs, downloaded_file)
-            if os.path.exists(orig_file):
-                os.remove(orig_file)
-            os.rename(final_mkv, orig_file)
+            orig_file_path = Path(orig_file)
+            if orig_file_path.exists():
+                orig_file_path.unlink()
+            Path(final_mkv).rename(orig_file)
             print(Fore.GREEN + f"Файл сохранён как: {orig_file}" + Style.RESET_ALL)
             if integrate_subs and not keep_sub_files:
                 for lang in subs_to_integrate_langs:
                     sub_file = safe_join(output_path_abs, f"{safe_output_name}.{lang}.{subtitle_download_options.get('subtitlesformat', 'srt')}")
-                    if os.path.exists(sub_file):
+                    if Path(sub_file).exists():
                         try:
-                            os.remove(sub_file)
+                            Path(sub_file).unlink()
                             print(Fore.YELLOW + f"Удалён файл субтитров: {sub_file}" + Style.RESET_ALL)
                         except Exception as e:
                             print(Fore.RED + f"Не удалось удалить файл субтитров: {sub_file}: {e}" + Style.RESET_ALL)
-            if integrate_chapters and not keep_chapter_file and chapter_filename and os.path.exists(safe_join(output_path_abs, chapter_filename)):
+            chapter_path = Path(safe_join(output_path_abs, chapter_filename))
+            if integrate_chapters and not keep_chapter_file and chapter_filename and chapter_path.exists():
                 try:
-                    os.remove(safe_join(output_path_abs, chapter_filename))
+                    chapter_path.unlink()
                     print(Fore.YELLOW + f"Удалён файл глав: {chapter_filename}" + Style.RESET_ALL)
                 except Exception as e:
                     print(Fore.RED + f"Не удалось удалить файл глав: {chapter_filename}: {e}" + Style.RESET_ALL)
@@ -1842,7 +1860,7 @@ def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT,
                 for line in all_lines:
                     f.write(line + "\n")
             print(Fore.GREEN + f"Список сохранён в файл: {default_filename}" + Style.RESET_ALL)
-            saved_list_path = os.path.abspath(default_filename)
+            saved_list_path = str(Path(default_filename).resolve())
         except Exception as e:
             print(Fore.RED + f"Ошибка при сохранении файла: {e}" + Style.RESET_ALL)
     return saved_list_path
@@ -1970,14 +1988,14 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
         print(Fore.MAGENTA + f"\nНачало обработки плейлиста: {pl_title}" + Style.RESET_ALL)        
-        folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
+        folder = Path(output_path) / re.sub(r'[<>:"/\\|?*!]', '', pl_title)
         if pl["videos"]:
             print(Fore.CYAN + f"\nПлейлист: {pl_title} ({len(pl['videos'])} видео)" + Style.RESET_ALL)
             saved_list_path = print_playlist_paginated(pl["videos"], page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=pl_title)
-            if saved_list_path and os.path.isfile(saved_list_path):
+            if saved_list_path and Path(saved_list_path).is_file():
                 try:
-                    dest_path = os.path.join(folder, os.path.basename(saved_list_path))
-                    os.makedirs(folder, exist_ok=True)
+                    dest_path = folder / Path(saved_list_path).name
+                    folder.mkdir(parents=True, exist_ok=True)
                     shutil.move(saved_list_path, dest_path)
                     print(Fore.GREEN + f"Список видео перемещён в папку плейлиста: {dest_path}" + Style.RESET_ALL)
                 except Exception as e:
@@ -2113,7 +2131,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                     except Exception as e:
                         print(f"\n{Fore.RED}Ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
         if pl["sub_playlists"]:
-            process_playlists(pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title))
+            process_playlists(pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, f"{parent_path}/{pl_title}")
 
 def print_playlists_tree(playlists, level=0):
     """
@@ -2138,7 +2156,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
         print(Fore.MAGENTA + f"\nНачало обработки плейлиста: {pl_title}" + Style.RESET_ALL)        
-        folder = os.path.join(output_path, re.sub(r'[<>:"/\\|?*!]', '', pl_title))
+        folder = Path(output_path) / re.sub(r'[<>:"/\\|?*!]', '', pl_title)
         add_index_prefix = True
         if pl["videos"]:
             answer = input(
@@ -2150,10 +2168,10 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
 
             print(Fore.CYAN + f"\nПлейлист: {pl_title} ({len(pl['videos'])} видео)" + Style.RESET_ALL)
             saved_list_path = print_playlist_paginated(pl["videos"], page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=pl_title)
-            if saved_list_path and os.path.isfile(saved_list_path):
+            if saved_list_path and Path(saved_list_path).is_file():
                 try:
-                    dest_path = os.path.join(folder, os.path.basename(saved_list_path))
-                    os.makedirs(folder, exist_ok=True)
+                    dest_path = folder / Path(saved_list_path).name
+                    folder.mkdir(parents=True, exist_ok=True)
                     shutil.move(saved_list_path, dest_path)
                     print(Fore.GREEN + f"Список видео перемещён в папку плейлиста: {dest_path}" + Style.RESET_ALL)
                 except Exception as e:
@@ -2273,7 +2291,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
         # Рекурсивно для подплейлистов
         if pl["sub_playlists"]:
             tasks.extend(collect_user_choices_for_playlists(
-                pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, os.path.join(parent_path, pl_title), selected_video_ids
+                pl["sub_playlists"], folder, auto_mode, platform, args, cookie_file_to_use, f"{parent_path}/{pl_title}", selected_video_ids
             ))
     return tasks
 
@@ -2362,9 +2380,9 @@ def download_tasks(tasks):
             keep_bak = subtitle_download_options.get('keep_original_auto_subs', False)
             sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
             for lang in subtitle_download_options.get('subtitleslangs', []):
-                sub_file = os.path.join(task["folder"], f"{output_name}.{lang}.{sub_format}")
-                if os.path.exists(sub_file) and normalize_auto and sub_format == "srt":
-                    normalize_srt_file(sub_file, overwrite=True, backup=keep_bak)
+                sub_file = Path(task["folder"]) / f"{output_name}.{lang}.{sub_format}"
+                if sub_file.exists() and normalize_auto and sub_format == "srt":
+                    normalize_srt_file(str(sub_file), overwrite=True, backup=keep_bak)
                     print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
         if downloaded_file:
             print(Fore.GREEN + f"Видео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
@@ -2513,27 +2531,27 @@ def normalize_srt_file(inp: str, overwrite: bool = True, backup: bool = False):
     """
     Нормализует SRT-файл, создаёт резервную копию при необходимости.
     """
-    if not os.path.exists(inp):
+    if not Path(inp).exists():
         print(f"Input file not found: {inp}")
         return
     caps = parse_srt(inp)
     norm = normalize_by_pairs_strict(caps)
     if overwrite:
         if backup:
-            bakfile = inp + ".bak"
-            if not os.path.exists(bakfile):
-                shutil.copy2(inp, bakfile)
+            bakfile = Path(inp).with_suffix('.bak')
+            if not bakfile.exists():
+                Path(inp).replace(bakfile)
                 print(f"Backup created: {bakfile}")
         target = inp
     else:
-        base, ext = os.path.splitext(inp)
-        target = base + "_normalized.srt"
+        target = str(Path(inp).with_suffix('')) + "_normalized.srt"
     write_srt(target, norm)
     print(f"Processed {inp} -> {target} ({len(norm)} blocks)")
 
 def main():
     """
     Главная функция: запускает обработку, парсинг, скачивание.
+    Весь пользовательский ввод и основной цикл работы.
     """
     global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
     global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
@@ -2567,29 +2585,16 @@ def main():
             print(Fore.CYAN + f"Ссылка получена из командной строки: {raw_url}" + Style.RESET_ALL)
         log_debug(f"Введена ссылка: {raw_url}")
 
-        try:
-            platform, url = extract_platform_and_url(raw_url)
-            log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
-            # --- ДОБАВЛЕНО: предварительная проверка валидности ссылки ---
-            try:
-                _ = safe_get_video_info(url, platform)
-            except DownloadError as e:
-                err_text = str(e).lower()
-                if "not a valid url" in err_text or "is not a valid url" in err_text:
-                    print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
-                    raw_url = None
-                    continue
-                else:
-                    raise
-            break  # если ошибок нет — выходим из цикла
-        except DownloadError as e:
-            err_text = str(e).lower()
-            if "not a valid url" in err_text or "is not a valid url" in err_text:
-                print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
-                raw_url = None
-                continue
-            else:
-                raise
+        platform, url = extract_platform_and_url(raw_url)
+        log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
+
+        if not is_valid_url_for_platform(url, platform):
+            print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
+            raw_url = None
+            continue
+        # После успешной проверки raw_url больше не нужен
+        raw_url = None
+        break
             
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
     subs_to_integrate_langs = []
@@ -2882,10 +2887,10 @@ def main():
                     log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
                 output_path = select_output_folder(auto_mode=False)
                 USER_SELECTED_OUTPUT_PATH = output_path
-                if saved_list_path and os.path.isfile(saved_list_path):
+                if saved_list_path and Path(saved_list_path).is_file():
                     try:
-                        dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
-                        shutil.move(saved_list_path, dest_path)
+                        dest_path = Path(output_path) / Path(saved_list_path).name
+                        Path(saved_list_path).replace(dest_path)
                         print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                     except Exception as e:
                         print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
@@ -2944,8 +2949,8 @@ def main():
                 USER_SELECTED_OUTPUT_NAME = output_name
                 log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
                 if (save_chapter_file or integrate_chapters) and has_chapters:
-                    chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
-                    save_chapters_to_file(chapters, chapter_filename)
+                    chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+                    save_chapters_to_file(chapters, str(chapter_filename))
                 log_debug(f"subtitle_options переданы: {subtitle_download_options}")
                 downloaded_file = download_video(
                     entry_url, video_id, audio_id, output_path, output_name, output_format,
@@ -2996,8 +3001,8 @@ def main():
                         output_name = get_unique_filename(safe_title, output_path, output_format)
                         log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
                         if (save_chapter_file or integrate_chapters) and has_chapters:
-                            chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
-                            save_chapters_to_file(chapters, chapter_filename)
+                            chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+                            save_chapters_to_file(chapters, str(chapter_filename))
                         log_debug(f"subtitle_options переданы: {subtitle_download_options}")
                         downloaded_file = download_video(
                             entry_url, video_id_auto, audio_id_auto, output_path, output_name, output_format,
@@ -3095,10 +3100,10 @@ def main():
                             log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
                         output_path = select_output_folder()
                         USER_SELECTED_OUTPUT_PATH = output_path
-                        if saved_list_path and os.path.isfile(saved_list_path):
+                        if saved_list_path and Path(saved_list_path).is_file():
                             try:
-                                dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
-                                shutil.move(saved_list_path, dest_path)
+                                dest_path = Path(output_path) / Path(saved_list_path).name
+                                Path(saved_list_path).replace(dest_path)
                                 print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                             except Exception as e:
                                 print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
@@ -3157,8 +3162,8 @@ def main():
                         output_name = get_unique_filename(safe_title, output_path, output_format)
                         log_debug(f"Финальное имя файла (автоматически): '{output_name}'")
                         if (save_chapter_file or integrate_chapters) and has_chapters:
-                            chapter_filename = os.path.normpath(os.path.join(output_path, f"{output_name}.chapters.txt"))
-                            save_chapters_to_file(chapters, chapter_filename)
+                            chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+                            save_chapters_to_file(chapters, str(chapter_filename))
                         log_debug(f"subtitle_options переданы: {subtitle_download_options}")
                         downloaded_file = download_video(
                             entry_url, video_id, audio_id, output_path, output_name, output_format,
@@ -3241,10 +3246,10 @@ def main():
                 log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
             output_path = select_output_folder()
             USER_SELECTED_OUTPUT_PATH = output_path
-            if saved_list_path and os.path.isfile(saved_list_path):
+            if saved_list_path and Path(saved_list_path).is_file():
                 try:
-                    dest_path = os.path.join(output_path, os.path.basename(saved_list_path))
-                    shutil.move(saved_list_path, dest_path)
+                    dest_path = Path(output_path) / Path(saved_list_path).name
+                    Path(saved_list_path).replace(dest_path)
                     print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                 except Exception as e:
                     print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
@@ -3293,8 +3298,8 @@ def main():
             USER_SELECTED_OUTPUT_NAME = output_name            
             log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
             if (save_chapter_file or integrate_chapters) and has_chapters:
-                chapter_filename = os.path.normpath(os.path.join(output_path, output_name + ".ffmeta"))
-                save_chapters_to_file(chapters, chapter_filename)
+                chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+                save_chapters_to_file(chapters, str(chapter_filename))
             # Запуск загрузки видео
             downloaded_file = download_video(
                 url, video_id, audio_id,
@@ -3308,9 +3313,9 @@ def main():
                 keep_bak = subtitle_download_options.get('keep_original_auto_subs', False)
                 sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
                 for lang in subtitle_download_options.get('subtitleslangs', []):
-                    sub_file = os.path.join(output_path, f"{output_name}.{lang}.{sub_format}")
-                    if os.path.exists(sub_file) and normalize_auto and sub_format == "srt":
-                        normalize_srt_file(sub_file, overwrite=True, backup=keep_bak)
+                    sub_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
+                    if sub_file.exists() and normalize_auto and sub_format == "srt":
+                        normalize_srt_file(str(sub_file), overwrite=True, backup=keep_bak)
                         print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
             if downloaded_file:
                 print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
@@ -3327,7 +3332,7 @@ def main():
 
         # --- Блок финальной проверки итогового файла ---
         final_file = None
-        if 'downloaded_file' in locals() and downloaded_file and os.path.isfile(downloaded_file):
+        if 'downloaded_file' in locals() and downloaded_file and Path(downloaded_file).is_file():
             final_file = downloaded_file
         # Для плейлистов можно добавить аналогично, если нужно
 
