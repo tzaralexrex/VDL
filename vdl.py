@@ -1712,7 +1712,11 @@ def mux_mkv_with_subs_and_chapters(
         subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
         print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
         try:
-            orig_file = safe_join(output_path_abs, downloaded_file)
+            orig_file = safe_join(output_path_abs, downloaded_file) if downloaded_file else None
+            if not orig_file or not isinstance(orig_file, (str, os.PathLike)):
+                print(Fore.RED + "Ошибка: итоговый файл для замены не определён (downloaded_file=None)." + Style.RESET_ALL)
+                log_debug("Ошибка: итоговый файл для замены не определён (downloaded_file=None).")
+                return
             orig_file_path = Path(orig_file)
             if orig_file_path.exists():
                 orig_file_path.unlink()
