@@ -1284,16 +1284,16 @@ def download_video(
                 ext_try = None
                 for ext_try in ("mp4", "mkv", "webm", "avi", "m4a", "mp3"):
                     # Стандартный вариант
-                    candidate_part = base_path + f".{ext_try}.part"
-                    candidate_final = base_path + f".{ext_try}"
+                    candidate_part = str(base_path) + f".{ext_try}.part"
+                    candidate_final = str(base_path) + f".{ext_try}"
                     if Path(candidate_part).exists():
                         part_file = candidate_part
                         final_file = candidate_final
                         found_parts.append(candidate_part)
                         break
                     # Вариант с суффиксом .f{video_id}
-                    candidate_part2 = base_path + f".f{video_id}.{ext_try}.part"
-                    candidate_final2 = base_path + f".f{video_id}.{ext_try}"
+                    candidate_part2 = str(base_path) + f".f{video_id}.{ext_try}.part"
+                    candidate_final2 = str(base_path) + f".f{video_id}.{ext_try}"
                     if Path(candidate_part2).exists():
                         part_file = candidate_part2
                         final_file = candidate_final2
@@ -1301,8 +1301,8 @@ def download_video(
                         break
                     # Вариант с суффиксом .f{audio_id}
                     if audio_id:
-                        candidate_part3 = base_path + f".f{audio_id}.{ext_try}.part"
-                        candidate_final3 = base_path + f".f{audio_id}.{ext_try}"
+                        candidate_part3 = str(base_path) + f".f{audio_id}.{ext_try}.part"
+                        candidate_final3 = str(base_path) + f".f{audio_id}.{ext_try}"
                         if Path(candidate_part3).exists():
                             part_file = candidate_part3
                             final_file = candidate_final3
@@ -1329,8 +1329,8 @@ def download_video(
                         audio_ok = True
                         if audio_id:
                             for ext_try_a in ("m4a", "mp3", "webm", "aac"):
-                                candidate_audio_part = base_path + f".f{audio_id}.{ext_try_a}.part"
-                                candidate_audio_final = base_path + f".f{audio_id}.{ext_try_a}"
+                                candidate_audio_part = str(base_path) + f".f{audio_id}.{ext_try_a}.part"
+                                candidate_audio_final = str(base_path) + f".f{audio_id}.{ext_try_a}"
                                 if Path(candidate_audio_part).exists():
                                     audio_part_file = candidate_audio_part
                                     audio_final_file = candidate_audio_final
@@ -1376,18 +1376,18 @@ def download_video(
                     base_path = Path(output_path) / output_name
                     for ext_try in ("mp4", "mkv", "webm", "avi", "m4a", "mp3"):
                         # Стандартный вариант
-                        part_candidate = base_path + f".{ext_try}.part"
+                        part_candidate = str(base_path) + f".{ext_try}.part"
                         if Path(part_candidate).exists():
                             part_file = part_candidate
                             break
                         # Вариант с суффиксом .f{video_id}
-                        part_candidate2 = base_path + f".f{video_id}.{ext_try}.part"
+                        part_candidate2 = str(base_path) + f".f{video_id}.{ext_try}.part"
                         if Path(part_candidate2).exists():
                             part_file = part_candidate2
                             break
                         # Вариант с суффиксом .f{audio_id}
                         if audio_id:
-                            part_candidate3 = base_path + f".f{audio_id}.{ext_try}.part"
+                            part_candidate3 = str(base_path) + f".f{audio_id}.{ext_try}.part"
                             if Path(part_candidate3).exists():
                                 part_file = part_candidate3
                                 break
