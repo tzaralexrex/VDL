@@ -1269,8 +1269,13 @@ def download_video(
             log_debug(f"DownloadError: {err_text} (retriable={retriable})")
 
             if is_subtitle_error and retriable_sub and attempt < MAX_RETRIES:
-                print(Fore.YELLOW + f"Ошибка загрузки субтитров (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
-                time.sleep(5)
+                if "HTTP Error 429" in err_text or "Too Many Requests" in err_text:
+                    print(Fore.YELLOW + f"Слишком много запросов к субтитрам (429). Ждём 60 секунд..." + Style.RESET_ALL)
+                    log_debug("Получен HTTP 429 при скачивании субтитров, увеличиваем паузу до 60 секунд.")
+                    time.sleep(60)
+                else:
+                    print(Fore.YELLOW + f"Ошибка загрузки субтитров (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
+                    time.sleep(5)
                 continue
 
             # --- Обработка ошибки HTTP 416 ---
