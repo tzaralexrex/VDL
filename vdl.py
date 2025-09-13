@@ -362,6 +362,7 @@ def is_valid_url_for_platform(url, platform):
     Проверяет, является ли ссылка валидной для yt-dlp (без скачивания).
     Возвращает True, если ссылка корректна, иначе False.
     """
+    print(Fore.CYAN + "Проверка валидности ссылки и куки-файла..." + Style.RESET_ALL)
     try:
         safe_get_video_info(url, platform)
         return True
@@ -380,12 +381,13 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
     # 1. Попытка загрузить куки из существующего файла
     if Path(cookie_file).exists():
         if not force_browser:
+            print(Fore.CYAN + f"Проверка валидности куки-файла {cookie_file} для {platform.capitalize()}..." + Style.RESET_ALL)
             # Передаём test_url — реальную ссылку (если есть)
             test_url = url
             log_debug(f"[LOG] Проверка куки-файла: {cookie_file} для платформы {platform} по ссылке {test_url}")
             # Проверяем валидность куки-файла
             if cookie_file_is_valid(platform, cookie_file, test_url=test_url):
-                print(Fore.CYAN + f"Пытаемся использовать куки из файла {cookie_file} для {platform.capitalize()}." + Style.RESET_ALL)
+                print(Fore.CYAN + f"Куки-файл {cookie_file} валиден, используем для {platform.capitalize()}." + Style.RESET_ALL)
                 log_debug(f"Файл куков '{cookie_file}' существует и прошёл проверку. Используем его.")
                 return str(Path(cookie_file).resolve())
             else:
@@ -535,6 +537,7 @@ def safe_get_video_info(url: str, platform: str):
 
         for attempt in ("file", "browser", "none"):
             try:
+                print(Fore.CYAN + "Получение информации о видео..." + Style.RESET_ALL)
                 return get_video_info(url, platform, current_cookie if attempt != "none" else None)
             except DownloadError as err:
                 err_l = str(err).lower()
