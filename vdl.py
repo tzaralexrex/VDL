@@ -1176,6 +1176,30 @@ def download_video(
         'writesubtitles'   : False,
         'progress_hooks'   : [],      # заполним ниже
     }
+
+    # --- Проверка наличия субтитров ---
+    if subtitle_options:
+        sub_format = subtitle_options.get('subtitlesformat', 'srt')
+        langs = subtitle_options.get('subtitleslangs', [])
+        skip_subs = []
+        for lang in langs:
+            sub_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
+            if sub_file.exists() and sub_file.stat().st_size > 1024:
+                skip_subs.append(lang)
+        if len(skip_subs) == len(langs):
+            subtitle_options['writesubtitles'] = False
+            subtitle_options['writeautomaticsub'] = False
+        else:
+            subtitle_options['subtitleslangs'] = [lang for lang in langs if lang not in skip_subs]
+        ydl_opts.update(subtitle_options)
+
+    # --- Проверка наличия файла глав ---
+    if subtitle_options and subtitle_options.get('writechapters'):
+        chapter_file = Path(output_path) / f"{output_name}.ffmeta"
+        if chapter_file.exists() and chapter_file.stat().st_size > 512:
+            subtitle_options['writechapters'] = False
+        ydl_opts.update(subtitle_options)
+
     # --- live_from_start для трансляций ---
     try:
         info = get_video_info(url, platform, cookie_file_path)
