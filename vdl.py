@@ -972,9 +972,24 @@ def select_output_folder(auto_mode=False):
             print(Fore.YELLOW + "Путь не введён. Попробуйте снова." + Style.RESET_ALL)
             continue
         folder_path = Path(folder).resolve()
-        if not folder_path.is_dir():
-            print(Fore.RED + f"Папка '{folder}' не существует. Попробуйте снова." + Style.RESET_ALL)
+        # Проверка на запрещённые символы
+        if any(s in folder_path.name for s in ['*', '?', '<', '>', '|', '"', ':']):
+            print(Fore.RED + "Путь содержит запрещённые символы. Попробуйте снова." + Style.RESET_ALL)
             continue
+        if not folder_path.is_dir():
+            print(Fore.RED + f"Папка '{folder}' не существует." + Style.RESET_ALL)
+            create_ans = input(Fore.CYAN + "Создать эту папку? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            if create_ans in ("", "1"):
+                try:
+                    folder_path.mkdir(parents=True, exist_ok=True)
+                    print(Fore.GREEN + f"Папка '{folder_path}' создана." + Style.RESET_ALL)
+                    return folder_path
+                except Exception as e:
+                    print(Fore.RED + f"Не удалось создать папку: {e}" + Style.RESET_ALL)
+                    continue
+            else:
+                print(Fore.YELLOW + "Введите путь к существующей папке." + Style.RESET_ALL)
+                continue
         return folder_path
 
 def ask_output_filename(default_name, output_path, output_format, auto_mode=False):
