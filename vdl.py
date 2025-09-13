@@ -357,22 +357,6 @@ def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
         log_debug(f"Ошибка при сохранении куков в файл {filename}:\n{traceback.format_exc()}")
         return False
 
-def is_valid_url_for_platform(url, platform):
-    """
-    Проверяет, является ли ссылка валидной для yt-dlp (без скачивания).
-    Возвращает True, если ссылка корректна, иначе False.
-    """
-    print(Fore.CYAN + "Проверка валидности ссылки и куки-файла..." + Style.RESET_ALL)
-    try:
-        safe_get_video_info(url, platform)
-        return True
-    except DownloadError as e:
-        err_text = str(e).lower()
-        if "not a valid url" in err_text or "is not a valid url" in err_text:
-            log_debug(f"Невалидная ссылка: {url} для платформы {platform}")
-            return False
-        raise
-
 def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, force_browser: bool = False) -> str | None:
     """
     Пытается получить куки: сначала из файла, затем из браузера.
@@ -518,48 +502,31 @@ def is_video_unavailable_error(err):
         "has been deleted", "is no longer available"
     ])
 
-def safe_get_video_info(url: str, platform: str):
+def safe_get_video_info(url: str, platform: str, cookie_file_to_use=None):
     """
     Безопасно получает информацию о видео, пробует разные куки и режимы.
     """
-    cookie_map = {
-        "youtube":  COOKIES_YT,
-        "facebook": COOKIES_FB,
-        "vimeo":    COOKIES_VI,
-        "rutube":   COOKIES_RT,
-        "vk":       COOKIES_VK,
-    }
-
-    # Платформы, которые явно поддерживаются
-    if platform in cookie_map:
-        cookie_path = cookie_map[platform]
-        current_cookie = get_cookies_for_platform(platform, cookie_path, url)
-
-        for attempt in ("file", "browser", "none"):
-            try:
-                print(Fore.CYAN + "Получение информации о видео..." + Style.RESET_ALL)
-                return get_video_info(url, platform, current_cookie if attempt != "none" else None)
-            except DownloadError as err:
-                err_l = str(err).lower()
-                need_login = any(x in err_l for x in ("login", "403", "private", "sign in", "unauthorized"))
-                if not need_login:
-                    raise
-                if attempt == "file":
-                    current_cookie = get_cookies_for_platform(platform, cookie_path, url=url, force_browser=True)
-                elif attempt == "browser":
-                    current_cookie = None
-                else:
-                    # --- ДОБАВЛЕНО: попытка через cookiesfrombrowser ---
-                    for browser in ("chrome", "firefox"):
-                        try:
-                            log_debug(f"safe_get_video_info: Пробуем cookiesfrombrowser: {browser}")
-                            return get_video_info(url, platform, cookiesfrombrowser=browser)
-                        except DownloadError as err2:
-                            log_debug(f"safe_get_video_info: cookiesfrombrowser {browser} не сработал: {err2}")
-                            continue
-                    print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
-                          f"Сохраните их вручную и положите файл сюда: {cookie_path}\n")
-                    raise DownloadError("Видео требует авторизации, а получить рабочие куки автоматически не удалось. Пропуск.")
+    # Если путь к куки-файлу уже получен — используем его
+    if cookie_file_to_use:
+        try:
+            print(Fore.CYAN + "Получение информации о видео..." + Style.RESET_ALL)
+            return get_video_info(url, platform, cookie_file_to_use)
+        except DownloadError as err:
+            err_l = str(err).lower()
+            need_login = any(x in err_l for x in ("login", "403", "private", "sign in", "unauthorized"))
+            if not need_login:
+                raise
+            # Если требуется авторизация, пробуем cookiesfrombrowser
+            for browser in ("chrome", "firefox"):
+                try:
+                    log_debug(f"safe_get_video_info: Пробуем cookiesfrombrowser: {browser}")
+                    return get_video_info(url, platform, cookiesfrombrowser=browser)
+                except DownloadError as err2:
+                    log_debug(f"safe_get_video_info: cookiesfrombrowser {browser} не сработал: {err2}")
+                    continue
+            print(f"\nВидео требует авторизации, а получить рабочие куки автоматически не удалось.\n"
+                  f"Сохраните их вручную и положите файл сюда: {cookie_file_to_use}\n")
+            raise DownloadError("Видео требует авторизации, а получить рабочие куки автоматически не удалось. Пропуск.")
 
     else:
         # ----- generic -----
@@ -1922,7 +1889,7 @@ def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
             title = entry.get('title') or entry.get('id') or entry.get('url')
             url = entry.get('url') or entry.get('webpage_url')
             if url:
-                info = safe_get_video_info(url, platform)
+                info = safe_get_video_info(url, platform, cookie_file_to_use)
                 subentries = info.get('entries', [])
                 print(Fore.MAGENTA + f"{indent}→ Найден раздел/плейлист: {title} ({len(subentries)} видео)" + Style.RESET_ALL)
                 expanded.extend(expand_channel_entries(subentries, platform, cookie_file_to_use, level=level+1))
@@ -1963,7 +1930,7 @@ def collect_playlists(entries, platform, cookie_file_to_use, level=0):
     for entry in playlist_entries:
         title = entry.get('title') or entry.get('id') or entry.get('url')
         url = entry.get('url') or entry.get('webpage_url')
-        info = safe_get_video_info(url, platform)
+        info = safe_get_video_info(url, platform, cookie_file_to_use)
         subentries = info.get('entries', [])
         log_debug(f"collect_playlists: subentries для '{title}' (count={len(subentries)})")
         # Разделяем вложенные плейлисты и видео
@@ -2038,7 +2005,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                     continue
                 print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
                 try:
-                    entry_info = safe_get_video_info(entry_url, platform)
+                    entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                 except DownloadError as e:
                     if is_video_unavailable_error(e):
                         print(Fore.YELLOW + f"Видео {first_idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2066,7 +2033,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' (автоматический режим) ===" + Style.RESET_ALL)
                     try:
                         try:
-                            entry_info = safe_get_video_info(entry_url, platform)
+                            entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                         except DownloadError as e:
                             if is_video_unavailable_error(e):
                                 print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2112,7 +2079,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' ===" + Style.RESET_ALL)
                     try:
                         try:
-                            entry_info = safe_get_video_info(entry_url, platform)
+                            entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                         except DownloadError as e:
                             if is_video_unavailable_error(e):
                                 print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2213,7 +2180,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                     else:
                         print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
                         try:
-                            entry_info = safe_get_video_info(entry_url, platform)
+                            entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                         except DownloadError as e:
                             if is_video_unavailable_error(e):
                                 print(Fore.YELLOW + f"Видео {first_idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2279,7 +2246,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                             print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
                             continue
                         print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' ===" + Style.RESET_ALL)
-                        entry_info = safe_get_video_info(entry_url, platform)
+                        entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         subtitle_download_options = ask_and_select_subtitles(entry_info)
                         output_format = ask_output_format(desired_ext)
@@ -2320,7 +2287,7 @@ def download_tasks(tasks):
 
         # Получаем info для текущего видео
         try:
-            entry_info = safe_get_video_info(entry_url, task["platform"])
+            entry_info = safe_get_video_info(entry_url, task["platform"], cookie_file_to_use)
         except DownloadError as e:
             if is_video_unavailable_error(e):
                 print(Fore.YELLOW + f"Видео недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2600,14 +2567,33 @@ def main():
         platform, url = extract_platform_and_url(raw_url)
         log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
 
-        if not is_valid_url_for_platform(url, platform):
-            print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
-            raw_url = None
-            continue
+        # --- Единоразовая проверка куки и ссылки ---
+        cookie_map = {
+            "youtube":  COOKIES_YT,
+            "facebook": COOKIES_FB,
+            "vimeo":    COOKIES_VI,
+            "rutube":   COOKIES_RT,
+            "vk":       COOKIES_VK,
+        }
+        cookie_file_to_use = None
+        if platform in cookie_map:
+            cookie_file_to_use = get_cookies_for_platform(platform, cookie_map[platform], url)
+        else:
+            cookie_file_to_use = None
+
+        try:
+            info = get_video_info(url, platform, cookie_file_to_use)
+        except DownloadError as e:
+            err_text = str(e).lower()
+            if "not a valid url" in err_text or "is not a valid url" in err_text:
+                print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
+                raw_url = None
+                continue
+            raise
         # После успешной проверки raw_url больше не нужен
         raw_url = None
         break
-            
+
     # --- ИНИЦИАЛИЗАЦИЯ переменных для предотвращения ошибок ---
     subs_to_integrate_langs = []
     integrate_subs = False
@@ -2632,7 +2618,7 @@ def main():
             if is_youtube_playlists_url(url):
                 channel_url = re.sub(r'/playlists/?$', '', url)
             print(Fore.YELLOW + "Получаем информацию по разделам канала..." + Style.RESET_ALL)
-            info_channel = safe_get_video_info(channel_url, platform)
+            info_channel = safe_get_video_info(channel_url, platform, cookie_file_to_use)
             channel_entries = info_channel.get('entries', [])
             sections = []
             for idx, entry in enumerate(channel_entries, 1):
@@ -2648,7 +2634,7 @@ def main():
                 print(Fore.YELLOW + "\nОбнаружена ссылка на раздел плейлистов канала YouTube." + Style.RESET_ALL)
                 playlists_url = get_youtube_playlists_url(channel_url)
                 print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
-                info_playlists = safe_get_video_info(playlists_url, platform)
+                info_playlists = safe_get_video_info(playlists_url, platform, cookie_file_to_use)
                 playlists_entries = info_playlists.get('entries', [])
                 # Выводим список плейлистов
                 playlist_infos = []
@@ -2658,7 +2644,7 @@ def main():
                     count = 0
                     if pl_url:
                         try:
-                            pl_info = safe_get_video_info(pl_url, platform)
+                            pl_info = safe_get_video_info(pl_url, platform, cookie_file_to_use)
                             count = len(pl_info.get('entries', []))
                         except Exception:
                             count = 0
@@ -2723,7 +2709,7 @@ def main():
                 if want_playlists:
                     playlists_url = get_youtube_playlists_url(channel_url)
                     print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
-                    info_playlists = safe_get_video_info(playlists_url, platform)
+                    info_playlists = safe_get_video_info(playlists_url, platform, cookie_file_to_use)
                     playlists_entries = info_playlists.get('entries', [])
                     playlist_infos = []
                     for idx, pl in enumerate(playlists_entries, 1):
@@ -2732,7 +2718,7 @@ def main():
                         count = 0
                         if pl_url:
                             try:
-                                pl_info = safe_get_video_info(pl_url, platform)
+                                pl_info = safe_get_video_info(pl_url, platform, cookie_file_to_use)
                                 count = len(pl_info.get('entries', []))
                             except Exception:
                                 count = 0
@@ -2767,7 +2753,7 @@ def main():
                 print(Fore.YELLOW + "Нет выбранных видео для скачивания." + Style.RESET_ALL)
             return
 
-        info = safe_get_video_info(url, platform)
+        info = safe_get_video_info(url, platform, cookie_file_to_use)
         cookie_file_to_use = info.get('__cookiefile__')
 
         # --- Обработка плейлиста ---
@@ -2862,7 +2848,7 @@ def main():
                     log_debug(f"Нет ссылки для первого видео {first_idx}")
                     return
                 print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста (выбор параметров) ===" + Style.RESET_ALL)
-                entry_info = safe_get_video_info(entry_url, platform)
+                entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                 cookie_file_to_use = entry_info.get('__cookiefile__')
                 chapters = entry_info.get("chapters")
                 has_chapters = isinstance(chapters, list) and len(chapters) > 0
@@ -2990,7 +2976,7 @@ def main():
                         continue
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста (автоматический режим) ===" + Style.RESET_ALL)
                     try:
-                        entry_info = safe_get_video_info(entry_url, platform)
+                        entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                         cookie_file_to_use = entry_info.get('__cookiefile__')
                         chapters = entry_info.get("chapters")
                         has_chapters = isinstance(chapters, list) and len(chapters) > 0
@@ -3063,7 +3049,7 @@ def main():
                     print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста ===" + Style.RESET_ALL)
                     try:
                         try:
-                            entry_info = safe_get_video_info(entry_url, platform)
+                            entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                             cookie_file_to_use = entry_info.get('__cookiefile__')
                             chapters = entry_info.get("chapters")
                             has_chapters = isinstance(chapters, list) and len(chapters) > 0
