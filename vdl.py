@@ -1240,6 +1240,21 @@ def download_video(
             candidate = last_file[0] or full_tmpl.replace('%(ext)s', merge_format)
             if Path(candidate).is_file():
                 return candidate
+            
+            # ---- поиск итогового файла ----
+            candidate = last_file[0] or full_tmpl.replace('%(ext)s', merge_format)
+            if Path(candidate).is_file():
+                # --- Новый блок: нормализация субтитров сразу после скачивания ---
+                if subtitle_options and subtitle_options.get('writeautomaticsub'):
+                    normalize_auto = subtitle_options.get('normalize_auto_subs', False)
+                    keep_bak = subtitle_options.get('keep_original_auto_subs', False)
+                    sub_format = subtitle_options.get('subtitlesformat', 'srt')
+                    for lang in subtitle_options.get('subtitleslangs', []):
+                        sub_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
+                        if sub_file.exists() and normalize_auto and sub_format == "srt":
+                            normalize_srt_file(str(sub_file), overwrite=True, backup=keep_bak)
+                            print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
+                return candidate
 
             base_low = output_name.lower()
             for fn in Path(output_path).iterdir():
@@ -2377,16 +2392,6 @@ def download_tasks(tasks):
             entry_url, video_id_final, audio_id_final, task["folder"], output_name, task["output_format"],
             task["platform"], task["cookie_file_to_use"], subtitle_options=task["subtitle_options"]
         )
-        subtitle_download_options = task.get("subtitle_options")
-        if subtitle_download_options and subtitle_download_options.get('writeautomaticsub'):
-            normalize_auto = subtitle_download_options.get('normalize_auto_subs', False)
-            keep_bak = subtitle_download_options.get('keep_original_auto_subs', False)
-            sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
-            for lang in subtitle_download_options.get('subtitleslangs', []):
-                sub_file = Path(task["folder"]) / f"{output_name}.{lang}.{sub_format}"
-                if sub_file.exists() and normalize_auto and sub_format == "srt":
-                    normalize_srt_file(str(sub_file), overwrite=True, backup=keep_bak)
-                    print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
         if downloaded_file:
             print(Fore.GREEN + f"Видео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
         else:
@@ -3330,15 +3335,6 @@ def main():
                 cookie_file_to_use,
                 subtitle_download_options
             )
-            if subtitle_download_options and subtitle_download_options.get('writeautomaticsub'):
-                normalize_auto = subtitle_download_options.get('normalize_auto_subs', False)
-                keep_bak = subtitle_download_options.get('keep_original_auto_subs', False)
-                sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
-                for lang in subtitle_download_options.get('subtitleslangs', []):
-                    sub_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
-                    if sub_file.exists() and normalize_auto and sub_format == "srt":
-                        normalize_srt_file(str(sub_file), overwrite=True, backup=keep_bak)
-                        print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
             if downloaded_file:
                 print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
             else:
