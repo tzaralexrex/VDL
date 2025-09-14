@@ -967,17 +967,19 @@ def select_output_folder(auto_mode=False):
             folder.mkdir(exist_ok=True)
             print(Fore.GREEN + f"Автоматически выбрана папка: {folder}" + Style.RESET_ALL)
             return folder
-        folder = input(Fore.CYAN + "Введите путь к папке для сохранения: " + Style.RESET_ALL).strip()
+        print(Fore.CYAN + f"Введите путь к папке для сохранения (Enter — использовать папку по умолчанию: {InitialDir}): " + Style.RESET_ALL)
+        folder = input().strip()
         if not folder:
-            print(Fore.YELLOW + "Путь не введён. Попробуйте снова." + Style.RESET_ALL)
-            continue
-        folder_path = Path(folder).resolve()
+            folder_path = Path(InitialDir).resolve()
+            print(Fore.GREEN + f"Используется папка по умолчанию: {folder_path}" + Style.RESET_ALL)
+        else:
+            folder_path = Path(folder).resolve()
         # Проверка на запрещённые символы
         if any(s in folder_path.name for s in ['*', '?', '<', '>', '|', '"', ':']):
             print(Fore.RED + "Путь содержит запрещённые символы. Попробуйте снова." + Style.RESET_ALL)
             continue
         if not folder_path.is_dir():
-            print(Fore.RED + f"Папка '{folder}' не существует." + Style.RESET_ALL)
+            print(Fore.RED + f"Папка '{folder_path}' не существует." + Style.RESET_ALL)
             create_ans = input(Fore.CYAN + "Создать эту папку? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
             if create_ans in ("", "1"):
                 try:
