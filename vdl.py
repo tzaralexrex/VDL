@@ -1017,6 +1017,7 @@ def select_output_folder(auto_mode=False):
 def ask_output_filename(default_name, output_path, output_format, auto_mode=False):
     """
     Запрашивает имя файла, проверяет существование и предлагает варианты при совпадении.
+    Поддержка: Windows, MacOS, Linux.
     """
     current_name = default_name
     log_debug(f"Предлагаемое имя файла (по умолчанию): {default_name}")
@@ -1127,6 +1128,7 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
 def ask_output_format(default_format, auto_mode=False):
     """
     Запрашивает у пользователя желаемый выходной формат файла.
+    Поддержка: Windows, MacOS, Linux.
     """
     formats = ['mp4', 'mkv', 'avi', 'webm']
     print("\n" + Fore.MAGENTA + "Выберите выходной формат:" + Style.RESET_ALL)
@@ -1164,6 +1166,7 @@ def ask_output_format(default_format, auto_mode=False):
 def phook(d, last_file_ref):
     """
     Хук для yt-dlp: сохраняет имя скачанного файла.
+    Поддержка: Windows, MacOS, Linux.
     """
     if d['status'] == 'finished':
         last_file_ref[0] = d.get('filename')
@@ -1500,6 +1503,7 @@ def download_video(
 def save_chapters_to_file(chapters, path):
     """
     Сохраняет главы видео в файл ffmetadata для интеграции в MKV.
+    Поддержка: Windows, MacOS, Linux.
     """
     try:
         path = str(Path(path).resolve())
@@ -1524,6 +1528,7 @@ def save_chapters_to_file(chapters, path):
 def parse_args():
     """
     Парсит аргументы командной строки.
+    Поддержка: Windows, MacOS, Linux.
     """
     parser = argparse.ArgumentParser(description="Universal Video Downloader", add_help=True)
     parser.add_argument('url', nargs='?', help='Ссылка на видео или плейлист')
@@ -1556,6 +1561,7 @@ def parse_selection(selection, total):
     - Открытый конец (7-), в середине списка трактуется как диапазон до следующего числа
     - Проверка на ошибки диапазонов и номеров
     - Вывод предупреждений при ошибках
+    Поддержка: Windows, MacOS, Linux.
     """
     result = set()
     errors = []
@@ -1624,6 +1630,7 @@ def parse_selection(selection, total):
 def find_by_format_id(formats, fmt_id, is_video=True):
     """
     Ищет формат по format_id среди доступных.
+    Поддержка: Windows, MacOS, Linux.
     """
     for f in formats:
         if f.get('format_id') == fmt_id:
@@ -1636,6 +1643,7 @@ def find_by_format_id(formats, fmt_id, is_video=True):
 def get_compatible_exts(ext):
     """
     Возвращает совместимые расширения для контейнера.
+    Поддержка: Windows, MacOS, Linux.
     """
     compat = {
         'mp4':  {'mp4', 'm4a'},
@@ -1649,6 +1657,7 @@ def get_compatible_exts(ext):
 def find_best_video(formats, ref_ext):
     """
     Ищет лучший видеоформат по расширению.
+    Поддержка: Windows, MacOS, Linux.
     """
     # Сначала ищем лучший mp4
     mp4_candidates = [f for f in formats if f.get('vcodec') != 'none' and f.get('ext', '').lower() == 'mp4']
@@ -1667,6 +1676,7 @@ def find_best_video(formats, ref_ext):
 def find_best_audio(formats, ref_ext):
     """
     Ищет лучший аудиоформат по расширению.
+    Поддержка: Windows, MacOS, Linux.
     """
     compatible_exts = get_compatible_exts(ref_ext)
     candidates = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none' and f.get('ext') in compatible_exts]
@@ -1680,6 +1690,7 @@ def find_best_audio(formats, ref_ext):
 def get_unique_filename(base_name, output_path, output_format):
     """
     Генерирует уникальное имя файла, если файл уже существует.
+    Поддержка: Windows, MacOS, Linux.
     """
     candidate = Path(output_path) / f"{base_name}.{output_format}"
     if not candidate.exists():
@@ -1694,6 +1705,7 @@ def get_unique_filename(base_name, output_path, output_format):
 def safe_join(base, *paths):
     """
     Безопасно объединяет пути, защищает от path-injection.
+    Поддержка: Windows, MacOS, Linux.
     """
     # Собирает путь и проверяет, что он внутри base
     joined = Path(base).resolve().joinpath(*paths).resolve()
@@ -1712,12 +1724,14 @@ def mux_mkv_with_subs_and_chapters(
     Удаляет временные файлы при необходимости.
     Защита от path-injection: output_name не должен содержать запрещенные символы.
     Все создаваемые файлы должны быть внутри output_path.
+    Поддержка: Windows, MacOS, Linux.
     """
 
     # --- Path-injection protection ---
     # Удаляем опасные символы из имени файла
     safe_output_name = re.sub(r'[\\/:"*?<>|]+', '', output_name)
-    safe_output_name = safe_output_name.replace('..', '').replace('.', '')  # убираем точки
+    # Убираем только опасные точки в начале и конце, расширение не трогаем
+    safe_output_name = safe_output_name.lstrip('.').rstrip('.')
     if not safe_output_name:
         raise ValueError("Некорректное имя файла после очистки (path-injection protection)")
 
@@ -1797,54 +1811,64 @@ def mux_mkv_with_subs_and_chapters(
 def wait_keys(wait_only_enter, enter_pressed, timeout):
     """
     Ожидает нажатие клавиши Enter или таймаут, поддерживает паузу по Space.
+    Поддержка: Windows, MacOS, Linux.
     """
+    system = platform.system().lower()
     try:
-        start_time = time.time()
-        last_sec = -1
-        while True:
-            elapsed = time.time() - start_time
-            left = int(timeout - elapsed)
-            if not wait_only_enter[0] and left != last_sec and left >= 0:
-                print(f"\rОжидание... {left} сек. ", end='', flush=True)
-                last_sec = left
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                if ch == '\r' or ch == '\n':
+        if system == "windows":
+            start_time = time.time()
+            last_sec = -1
+            while True:
+                elapsed = time.time() - start_time
+                left = int(timeout - elapsed)
+                if not wait_only_enter[0] and left != last_sec and left >= 0:
+                    print(f"\rОжидание... {left} сек. ", end='', flush=True)
+                    last_sec = left
+                if msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    if ch == '\r' or ch == '\n':
+                        print()
+                        enter_pressed[0] = True
+                        return
+                    elif ch == ' ':
+                        wait_only_enter[0] = True
+                        print(Fore.CYAN + "\nПауза: нажмите Enter для продолжения..." + Style.RESET_ALL)
+                        while True:
+                            if msvcrt.kbhit():
+                                ch2 = msvcrt.getwch()
+                                if ch2 == '\r' or ch2 == '\n':
+                                    print()
+                                    enter_pressed[0] = True
+                                    return
+                            time.sleep(0.05)
+                if not wait_only_enter[0] and elapsed >= timeout:
                     print()
-                    enter_pressed[0] = True
                     return
-                elif ch == ' ':
-                    wait_only_enter[0] = True
-                    print(Fore.CYAN + "\nПауза: нажмите Enter для продолжения..." + Style.RESET_ALL)
-                    while True:
-                        if msvcrt.kbhit():
-                            ch2 = msvcrt.getwch()
-                            if ch2 == '\r' or ch2 == '\n':
-                                print()
-                                enter_pressed[0] = True
-                                return
-                        time.sleep(0.05)
-            if not wait_only_enter[0] and elapsed >= timeout:
-                print()
-                return
-            time.sleep(0.05)
-    except ImportError:
-        # Fallback для других ОС: просто input с таймаутом
-        try:
-            input_thread = threading.Thread(target=input)
+                time.sleep(0.05)
+        else:
+            # Кроссплатформенный вариант: input с таймаутом через поток
+            import threading
+
+            def wait_input(flag):
+                input()
+                flag[0] = True
+
+            flag = [False]
+            input_thread = threading.Thread(target=wait_input, args=(flag,))
             input_thread.daemon = True
             input_thread.start()
             for left in range(timeout, 0, -1):
                 print(f"\rОжидание... {left} сек. ", end='', flush=True)
                 input_thread.join(1)
-                if not input_thread.is_alive():
+                if flag[0]:
                     print()
                     enter_pressed[0] = True
                     return
             print()
             return
-        except Exception:
-            return
+    except Exception:
+        print()
+        return
 
 def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=None, auto_mode=False):
     """
@@ -1853,6 +1877,7 @@ def print_playlist_paginated(entries, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT,
     Если нажата Space — таймер останавливается, ждём только Enter.
     После полного вывода спрашивает, сохранить ли список в файл.
     Возвращает путь к сохранённому файлу списка (или None).
+    Поддержка: Windows, MacOS, Linux.
     """
     log_debug(f"print_playlist_paginated: entries_count={len(entries)}, title={playlist_title}")
     total = len(entries)
@@ -1926,6 +1951,7 @@ def check_mkv_integrity(filepath, expected_video_codec=None, expected_audio_code
     expected_sub_langs — список языков субтитров (['ru', 'en'] и т.д.)
     expected_chapters — True/False (ожидаются ли главы)
     Возвращает True, если всё соответствует, иначе False.
+    Поддержка: Windows, MacOS, Linux.
     """
     try:
         probe = ffmpeg.probe(filepath)
@@ -1956,6 +1982,7 @@ def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
     """
     Рекурсивно раскрывает только разделы/плейлисты, но НЕ делает запросов к каждому видео.
     Возвращает список элементов, где каждый — это видео (url/id/title), но без подробной info.
+    Поддержка: Windows, MacOS, Linux.
     """
     expanded = []
     indent = "  " * level
@@ -1980,6 +2007,7 @@ def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
 def has_nested_playlists(pls):
     """
     Проверяет, есть ли вложенные плейлисты.
+    Поддержка: Windows, MacOS, Linux.
     """
     return any(pl.get("sub_playlists") for pl in pls)
 
@@ -1987,6 +2015,7 @@ def collect_playlists(entries, platform, cookie_file_to_use, level=0):
     """
     Рекурсивно строит структуру: [{title, videos, sub_playlists}]
     Корректно различает настоящие видео и плейлисты для YouTube /playlists.
+    Поддержка: Windows, MacOS, Linux.
     """
     log_debug(f"collect_playlists: level={level}, entries_count={len(entries)}")
     playlists = []
@@ -2039,6 +2068,7 @@ def collect_playlists(entries, platform, cookie_file_to_use, level=0):
 def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_file_to_use, parent_path=""):
     """
     Обрабатывает плейлисты: выводит, спрашивает, запускает скачивание.
+    Поддержка: Windows, MacOS, Linux.
     """
     for pl in playlists:
         pl_title = pl["title"] or "playlist"
@@ -2191,6 +2221,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
 def print_playlists_tree(playlists, level=0):
     """
     Выводит дерево плейлистов с вложенностью.
+    Поддержка: Windows, MacOS, Linux.
     """
     log_debug(f"print_playlists_tree: level={level}, playlists_count={len(playlists)}")
     for pl in playlists:
@@ -2203,6 +2234,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
     """
     Рекурсивно собирает пользовательские выборы по всем плейлистам.
     Возвращает список задач на скачивание: [{folder, entry, параметры...}]
+    Поддержка: Windows, MacOS, Linux.
     """
     if selected_video_ids is None:
         selected_video_ids = {}
@@ -2353,6 +2385,7 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
 def download_tasks(tasks):
     """
     Выполняет скачивание по списку задач, собранных collect_user_choices_for_playlists.
+    Поддержка: Windows, MacOS, Linux.
     """
     for task in tasks:
         entry = task["entry"]
@@ -2441,6 +2474,7 @@ def is_youtube_channel_url(url: str) -> bool:
     https://www.youtube.com/channel/UC...
     https://www.youtube.com/c/...
     но не содержит /playlists, /videos, /shorts, /live, /community и т.п.
+    Поддержка: Windows, MacOS, Linux.
     """
     channel_patterns = [
         r'^https?://(www\.)?youtube\.com/@[^/]+/?$',
@@ -2455,12 +2489,14 @@ def is_youtube_channel_url(url: str) -> bool:
 def is_youtube_playlists_url(url: str) -> bool:
     """
     Проверяет, является ли ссылка ссылкой на раздел плейлистов YouTube-канала.
+    Поддержка: Windows, MacOS, Linux.
     """
     return bool(re.match(r'^https?://(www\.)?youtube\.com/(c/|channel/|@)[^/]+/playlists/?$', url, re.I))
 
 def get_youtube_playlists_url(channel_url: str) -> str:
     """
     Возвращает ссылку на раздел плейлистов для данного канала.
+    Поддержка: Windows, MacOS, Linux.
     """
     if channel_url.endswith('/'):
         return channel_url + 'playlists'
@@ -2470,6 +2506,7 @@ def get_youtube_playlists_url(channel_url: str) -> str:
 def parse_time_to_ms(t: str) -> int:
     """
     Преобразует строку времени SRT в миллисекунды.
+    Поддержка: Windows, MacOS, Linux.
     """
     h, m, s_ms = t.split(":")
     s, ms = s_ms.split(",")
@@ -2478,6 +2515,7 @@ def parse_time_to_ms(t: str) -> int:
 def ms_to_srt_time(ms: int) -> str:
     """
     Преобразует миллисекунды в строку времени SRT.
+    Поддержка: Windows, MacOS, Linux.
     """
     if ms < 0:
         ms = 0
@@ -2492,6 +2530,7 @@ def ms_to_srt_time(ms: int) -> str:
 def parse_srt(path: str) -> List[Caption]:
     """
     Парсит SRT-файл, возвращает список Caption.
+    Поддержка: Windows, MacOS, Linux.
     """
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -2511,6 +2550,7 @@ def parse_srt(path: str) -> List[Caption]:
 def normalize_by_pairs_strict(caps: List[Caption]) -> List[Caption]:
     """
     Нормализует субтитры: убирает перекрытия, объединяет блоки.
+    Поддержка: Windows, MacOS, Linux.
     """
     out: List[Caption] = []
     i = 0
@@ -2567,6 +2607,7 @@ def normalize_by_pairs_strict(caps: List[Caption]) -> List[Caption]:
 def write_srt(path: str, caps: List[Caption]):
     """
     Записывает список Caption в SRT-файл.
+    Поддержка: Windows, MacOS, Linux.
     """
     with open(path, "w", encoding="utf-8") as f:
         for i, c in enumerate(caps, start=1):
@@ -2575,6 +2616,7 @@ def write_srt(path: str, caps: List[Caption]):
 def normalize_srt_file(inp: str, overwrite: bool = True, backup: bool = False):
     """
     Нормализует SRT-файл, создаёт резервную копию при необходимости.
+    Поддержка: Windows, MacOS, Linux.
     """
     if not Path(inp).exists():
         print(f"Input file not found: {inp}")
@@ -2597,6 +2639,7 @@ def main():
     """
     Главная функция: запускает обработку, парсинг, скачивание.
     Весь пользовательский ввод и основной цикл работы.
+    Поддержка: Windows, MacOS, Linux.
     """
     global USER_SELECTED_SUB_LANGS, USER_SELECTED_SUB_FORMAT, USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES
     global USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_VIDEO_CODEC, USER_SELECTED_AUDIO_CODEC
