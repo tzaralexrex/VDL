@@ -7,19 +7,26 @@ import re
 import time
 import traceback
 import http.cookiejar
-import ctypes
 import importlib
 import os
 import platform
 import argparse
 import threading
 import shutil
-import msvcrt
 from pathlib import Path
 from datetime import datetime
 from shutil import which
 from dataclasses import dataclass
 from typing import List
+
+system = platform.system().lower()
+
+if system == "windows":
+    import msvcrt
+    import ctypes
+elif system == "darwin":
+    # MacOS: msvcrt и ctypes не нужны
+    pass
 
 
 # --- Глобальные настройки и константы ---
@@ -97,6 +104,7 @@ from packaging.version import parse as parse_version
 def import_or_update(module_name, pypi_name=None, min_version=None, force_check=False):
     """
     Импортирует модуль, при необходимости устанавливает или обновляет его до актуальной версии с PyPI.
+    Поддержка: Windows, MacOS, Linux.
     :param module_name: имя для importlib.import_module
     :param pypi_name: имя пакета на PyPI (если отличается)
     :param min_version: минимальная версия (опционально)
@@ -189,6 +197,7 @@ def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) 
     """
     Проверяет, «жив» ли куки-файл по реальной ссылке (например, на видео).
     Если test_url не задан, используется главная страница платформы.
+    Поддержка: Windows, MacOS, Linux.
     """
     if not test_url:
         # Если не указана тестовая ссылка — используем главную страницу платформы
@@ -212,31 +221,29 @@ def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) 
 
 def detect_ffmpeg_path():
     """
-    Ищет ffmpeg.exe в локальной папке и в системном PATH.
+    Ищет ffmpeg (ffmpeg.exe для Windows, ffmpeg для MacOS/Linux) в локальной папке и в системном PATH.
     Возвращает путь к ffmpeg или None.
+    Поддержка: Windows, MacOS, Linux.
     """
-    # Получаем путь к папке, где находится скрипт
     script_dir = Path(sys.argv[0]).resolve().parent
-    # Формируем локальный путь к ffmpeg.exe
-    local_path = script_dir / "ffmpeg.exe"
+    ffmpeg_filename = "ffmpeg.exe" if system == "windows" else "ffmpeg"
+    local_path = script_dir / ffmpeg_filename
     log_debug(f"Поиск ffmpeg: Проверяем локальный путь: {local_path}")
-    # Проверяем наличие ffmpeg.exe в локальной папке
     if Path(local_path).is_file():
         log_debug(f"FFmpeg найден по локальному пути: {local_path}")
         return local_path
-    # Если не найден — ищем в системном PATH
     system_path = which("ffmpeg")
     log_debug(f"Поиск ffmpeg: Проверяем системный PATH: {system_path}")
     if system_path and Path(system_path).is_file():
         log_debug(f"FFmpeg найден в системном PATH: {system_path}")
         return system_path
-    # Если не найден нигде — возвращаем None
     log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH.")
     return None
 
 def log_debug(message):
     """
     Записывает сообщение в файл журнала отладки, если DEBUG включён.
+    Поддержка: Windows, MacOS, Linux.
     """
     global debug_file_initialized
 
@@ -265,6 +272,7 @@ def log_debug(message):
 def clean_url_by_platform(platform: str, url: str) -> str:
     """
     Очищает и нормализует ссылку для указанной платформы (Facebook, VK и др.).
+    Поддержка: Windows, MacOS, Linux.
     """
     try:
         # Для Facebook — извлекаем ID видео по разным паттернам
@@ -310,6 +318,7 @@ def clean_url_by_platform(platform: str, url: str) -> str:
 def extract_platform_and_url(raw_url: str):
     """
     Определяет платформу по ссылке и возвращает (platform, cleaned_url).
+    Поддержка: Windows, MacOS, Linux.
     """
     # Очищаем входную ссылку от пробелов
     url = raw_url.strip()
@@ -339,6 +348,7 @@ def extract_platform_and_url(raw_url: str):
 def save_cookies_to_netscape_file(cj: http.cookiejar.CookieJar, filename: str):
     """
     Сохраняет объект CookieJar в файл Netscape-формата, который может быть использован yt-dlp.
+    Поддержка: Windows, MacOS, Linux.
     """
     try:
         # Создаём объект MozillaCookieJar для сохранения в Netscape-формате
@@ -361,6 +371,8 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
     """
     Пытается получить куки: сначала из файла, затем из браузера.
     Возвращает путь к файлу куков, если куки успешно получены/загружены, иначе None.
+    Safari на MacOS не поддерживается.
+    Поддержка: Windows, MacOS, Linux.
     """
     # 1. Попытка загрузить куки из существующего файла
     if Path(cookie_file).exists():
@@ -383,6 +395,8 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
         print(Fore.CYAN + f"Принудительный режим: пропускаем проверку и извлекаем куки из браузера." + Style.RESET_ALL)
 
     # 2. Попытка извлечь куки из браузера
+    if system == "darwin":
+        print(Fore.YELLOW + "Safari не поддерживается для автоматического получения куков. Используйте Chrome или Firefox, либо экспортируйте куки вручную." + Style.RESET_ALL)
     browsers_to_try = ['chrome', 'firefox']
     browser_functions = {
         'chrome': browser_cookie3.chrome,
@@ -448,6 +462,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
 def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None):
     """
     Получает информацию о видео/плейлисте через yt-dlp.
+    Поддержка: Windows, MacOS, Linux.
     """
     log_debug(f"get_video_info: Итоговая платформа: {platform}, URL: {url}")
     ydl_opts = {'quiet': True, 'skip_download': True}
@@ -493,6 +508,7 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
 def is_video_unavailable_error(err):
     """
     Проверяет, относится ли ошибка к недоступности видео (премьера, удалено, скрыто и т.п.)
+    Поддержка: Windows, MacOS, Linux.
     """
     err_text = str(err).lower()
     return any(x in err_text for x in [
@@ -505,6 +521,7 @@ def is_video_unavailable_error(err):
 def safe_get_video_info(url: str, platform: str, cookie_file_to_use=None):
     """
     Безопасно получает информацию о видео, пробует разные куки и режимы.
+    Поддержка: Windows, MacOS, Linux.
     """
     # Если путь к куки-файлу уже получен — используем его
     if cookie_file_to_use:
@@ -582,6 +599,7 @@ def safe_get_video_info(url: str, platform: str, cookie_file_to_use=None):
 def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
     """
     Позволяет выбрать видео- и аудиоформат из списка доступных.
+    Поддержка: Windows, MacOS, Linux.
     Возвращает кортеж с параметрами формата:
         (video_id, audio_id|None,
          desired_ext, video_ext, audio_ext,
