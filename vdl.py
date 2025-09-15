@@ -798,6 +798,7 @@ def choose_format(formats, auto_mode=False, bestvideo=False, bestaudio=False):
 def ask_and_select_subtitles(info, auto_mode=False):
     """ 
     Обрабатывает наличие вложенных и автоматических субтитров, формирует выбор пользователя
+    Поддержка: Windows, MacOS, Linux.
     Запрашивает у пользователя выбор субтитров и их формата.
     Возвращает словарь с параметрами загрузки субтитров.
     """
@@ -947,6 +948,7 @@ def select_output_folder(auto_mode=False):
     """
     Запрашивает у пользователя папку для сохранения файлов.
     В автоматическом режиме выбирает папку по умолчанию.
+    Поддержка: Windows, MacOS, Linux.
     """
     print("\n" + Fore.CYAN + "Выберите папку для сохранения видео" + Style.RESET_ALL)
     system = platform.system().lower()
