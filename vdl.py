@@ -1747,7 +1747,7 @@ def mux_mkv_with_subs_and_chapters(
             if not orig_file or not isinstance(orig_file, (str, os.PathLike)):
                 print(Fore.RED + "Ошибка: итоговый файл для замены не определён (downloaded_file=None)." + Style.RESET_ALL)
                 log_debug("Ошибка: итоговый файл для замены не определён (downloaded_file=None).")
-                return
+                return  # <--- корректно завершаем функцию, не пытаемся переименовать
             orig_file_path = Path(orig_file)
             if orig_file_path.exists():
                 orig_file_path.unlink()
@@ -3006,12 +3006,16 @@ def main():
                     print(Fore.RED + f"Ошибка при скачивании видео {first_idx}." + Style.RESET_ALL)
 
                 if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                    mux_mkv_with_subs_and_chapters(
-                        downloaded_file, output_name, output_path,
-                        subs_to_integrate_langs, subtitle_download_options,
-                        integrate_subs, keep_sub_files,
-                        integrate_chapters, keep_chapter_file, chapter_filename
-                    )
+                    if downloaded_file and Path(downloaded_file).is_file():
+                        mux_mkv_with_subs_and_chapters(
+                            downloaded_file, output_name, output_path,
+                            subs_to_integrate_langs, subtitle_download_options,
+                            integrate_subs, keep_sub_files,
+                            integrate_chapters, keep_chapter_file, chapter_filename
+                        )
+                    else:
+                        print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                        log_debug("Ошибка: итоговый файл для интеграции не найден.")
                 # --- Для остальных видео применяем те же параметры ---
                 for idx in selected_indexes[1:]:
                     entry = entries[idx - 1]
@@ -3058,12 +3062,16 @@ def main():
                             print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
 
                         if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                            mux_mkv_with_subs_and_chapters(
-                                downloaded_file, output_name, output_path,
-                                subs_to_integrate_langs, subtitle_download_options,
-                                integrate_subs, keep_sub_files,
-                                integrate_chapters, keep_chapter_file, chapter_filename
-                            )
+                            if downloaded_file and Path(downloaded_file).is_file():
+                                mux_mkv_with_subs_and_chapters(
+                                    downloaded_file, output_name, output_path,
+                                    subs_to_integrate_langs, subtitle_download_options,
+                                    integrate_subs, keep_sub_files,
+                                    integrate_chapters, keep_chapter_file, chapter_filename
+                                )
+                            else:
+                                print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                                log_debug("Ошибка: итоговый файл для интеграции не найден.")
 
                     except KeyboardInterrupt:
                         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
@@ -3219,12 +3227,16 @@ def main():
                             print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
 
                         if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                            mux_mkv_with_subs_and_chapters(
-                                downloaded_file, output_name, output_path,
-                                subs_to_integrate_langs, subtitle_download_options,
-                                integrate_subs, keep_sub_files,
-                                integrate_chapters, keep_chapter_file, chapter_filename
-                            )
+                            if downloaded_file and Path(downloaded_file).is_file():
+                                mux_mkv_with_subs_and_chapters(
+                                    downloaded_file, output_name, output_path,
+                                    subs_to_integrate_langs, subtitle_download_options,
+                                    integrate_subs, keep_sub_files,
+                                    integrate_chapters, keep_chapter_file, chapter_filename
+                                )
+                            else:
+                                print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                                log_debug("Ошибка: итоговый файл для интеграции не найден.")
 
                     except KeyboardInterrupt:
                         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
@@ -3358,12 +3370,16 @@ def main():
                 print(Fore.RED + "\nОшибка при скачивании видео." + Style.RESET_ALL)
 
             if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                mux_mkv_with_subs_and_chapters(
-                    downloaded_file, output_name, output_path,
-                    subs_to_integrate_langs, subtitle_download_options,
-                    integrate_subs, keep_sub_files,
-                    integrate_chapters, keep_chapter_file, chapter_filename
-                )
+                if downloaded_file and Path(downloaded_file).is_file():
+                    mux_mkv_with_subs_and_chapters(
+                        downloaded_file, output_name, output_path,
+                        subs_to_integrate_langs, subtitle_download_options,
+                        integrate_subs, keep_sub_files,
+                        integrate_chapters, keep_chapter_file, chapter_filename
+                    )
+                else:
+                    print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                    log_debug("Ошибка: итоговый файл для интеграции не найден.")
 
         # --- Блок финальной проверки итогового файла ---
         final_file = None
@@ -3389,12 +3405,16 @@ def main():
             if not ok:
                 log_debug("Файл MKV не соответствует выбранным опциям — запускаем принудительную интеграцию.")
                 print(Fore.YELLOW + "Файл MKV не содержит все выбранные дорожки. Запускается повторная интеграция..." + Style.RESET_ALL)
-                mux_mkv_with_subs_and_chapters(
-                    final_file, USER_SELECTED_OUTPUT_NAME, USER_SELECTED_OUTPUT_PATH,
-                    USER_SELECTED_SUB_LANGS, {'subtitlesformat': USER_SELECTED_SUB_FORMAT},
-                    USER_INTEGRATE_SUBS, USER_KEEP_SUB_FILES,
-                    USER_INTEGRATE_CHAPTERS, USER_KEEP_CHAPTER_FILE, USER_SELECTED_CHAPTER_FILENAME
-                )
+                if downloaded_file and Path(downloaded_file).is_file():
+                    mux_mkv_with_subs_and_chapters(
+                        downloaded_file, output_name, output_path,
+                        subs_to_integrate_langs, subtitle_download_options,
+                        integrate_subs, keep_sub_files,
+                        integrate_chapters, keep_chapter_file, chapter_filename
+                    )
+                else:
+                    print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                    log_debug("Ошибка: итоговый файл для интеграции не найден.")
             else:
                 log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.") 
     except KeyboardInterrupt:
