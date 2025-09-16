@@ -1130,30 +1130,37 @@ def ask_output_filename(default_name, output_path, output_format, auto_mode=Fals
                 log_debug(f"Введенное имя '{new_full_path}' не существует. Используем его.")
                 return new_name  # Введенное имя не существует, используем его
             
-def ask_output_format(default_format, auto_mode=False):
+def ask_output_format(default_format, auto_mode=False, subtitle_options=None, has_chapters=False):
     """
     Запрашивает у пользователя желаемый выходной формат файла.
+    Если выбраны встроенные субтитры или главы, по умолчанию предлагается mkv.
     Поддержка: Windows, MacOS, Linux.
     """
     formats = ['mp4', 'mkv', 'avi', 'webm']
+    # --- Определяем дефолтный формат ---
+    mkv_needed = False
+    if subtitle_options:
+        # Если выбраны встроенные субтитры
+        if subtitle_options.get('writesubtitles') or subtitle_options.get('writeautomaticsub'):
+            mkv_needed = True
+    if has_chapters:
+        mkv_needed = True
+    if mkv_needed:
+        default_format = 'mkv'
     print("\n" + Fore.MAGENTA + "Выберите выходной формат:" + Style.RESET_ALL)
     for i, f in enumerate(formats):
         print(f"{i}: {f}")
-    
     try:
         default_format_index = formats.index(default_format)
     except ValueError:
         default_format = 'mp4'
         default_format_index = formats.index(default_format)
     log_debug(f"Начальный/дефолтный выходной формат: {default_format} (индекс {default_format_index})")
-
     if auto_mode:
         print(Fore.GREEN + f"Использование формата по умолчанию: {default_format}" + Style.RESET_ALL)
         log_debug(f"Выбран формат по умолчанию: {default_format} (auto_mode)")
         return default_format
-
     choice = input(Fore.CYAN + f"Номер формата (по умолчанию {default_format_index}: {default_format}): " + Style.RESET_ALL).strip()
-    
     if not choice:
         print(Fore.GREEN + f"Использование формата по умолчанию: {default_format}" + Style.RESET_ALL)
         log_debug(f"Выбран формат по умолчанию: {default_format}")
@@ -2133,7 +2140,12 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
 
                 video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
                 subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
-                output_format = ask_output_format(desired_ext, auto_mode=False)
+                output_format = ask_output_format(
+                    desired_ext,
+                    auto_mode=False,
+                    subtitle_options=subtitle_download_options,
+                    has_chapters=has_chapters
+                )
 
                 for idx in selected_indexes:
                     entry = pl["videos"][idx - 1]
@@ -2206,7 +2218,12 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                             continue
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         subtitle_download_options = ask_and_select_subtitles(entry_info)
-                        output_format = ask_output_format(desired_ext)
+                        output_format = ask_output_format(
+                            desired_ext,
+                            auto_mode=False,
+                            subtitle_options=subtitle_download_options,
+                            has_chapters=has_chapters
+                        )
                         default_title = entry_info.get('title', f'video_{idx}')
                         safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                         output_name = get_unique_filename(safe_title, folder, output_format)
@@ -2309,7 +2326,12 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                             continue
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)
                         subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
-                        output_format = ask_output_format(desired_ext, auto_mode=False)
+                        output_format = ask_output_format(
+                            desired_ext,
+                            auto_mode=False,
+                            subtitle_options=subtitle_download_options,
+                            has_chapters=has_chapters
+                        )
                         # Можно добавить обработку глав и субтитров, если нужно
 
                         for idx in selected_indexes:
@@ -2362,7 +2384,12 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                         entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         subtitle_download_options = ask_and_select_subtitles(entry_info)
-                        output_format = ask_output_format(desired_ext)
+                        output_format = ask_output_format(
+                            desired_ext,
+                            auto_mode=False,
+                            subtitle_options=subtitle_download_options,
+                            has_chapters=has_chapters
+                        )
                         default_title = entry.get('title', f'video_{idx}')
                         safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
                         if add_index_prefix:
@@ -3006,7 +3033,12 @@ def main():
                         print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                     except Exception as e:
                         print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
-                output_format = ask_output_format(desired_ext, auto_mode=False)
+                output_format = ask_output_format(
+                    desired_ext,
+                    auto_mode=False,
+                    subtitle_options=subtitle_download_options,
+                    has_chapters=has_chapters
+                )
                 USER_SELECTED_OUTPUT_FORMAT = output_format
                 integrate_subs = False
                 keep_sub_files = True
@@ -3227,7 +3259,12 @@ def main():
                                 print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                             except Exception as e:
                                 print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
-                        output_format = ask_output_format(desired_ext)
+                        output_format = ask_output_format(
+                            desired_ext,
+                            auto_mode=False,
+                            subtitle_options=subtitle_download_options,
+                            has_chapters=has_chapters
+                        )
                         USER_SELECTED_OUTPUT_FORMAT = output_format
                         integrate_subs = False
                         keep_sub_files = True
@@ -3377,7 +3414,11 @@ def main():
                     print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
                 except Exception as e:
                     print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
-            output_format = ask_output_format(desired_ext)
+            output_format = ask_output_format(
+                desired_ext,
+                subtitle_options=subtitle_download_options,
+                has_chapters=has_chapters
+            )
             USER_SELECTED_OUTPUT_FORMAT = output_format
             integrate_subs = False
             keep_sub_files = True
