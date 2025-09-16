@@ -3,7 +3,7 @@
 # Universal Video Downloader with Cookie Browser Support
 # Скрипт для скачивания видео с поддержкой куки, плейлистов, форматов, субтитров и глав.
 # В случае ошибок импорта модулей при первоначальном запуске скрипта, рекомендуется установить их вручную, например:
-# python3 -m pip install packaging colorama yt-dlp browser_cookie3 psutil ffmpeg-python
+# python3 -m pip install requests packaging colorama yt-dlp browser_cookie3 psutil ffmpeg-python
 
 import subprocess
 import sys
