@@ -118,9 +118,11 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
     # Если не требуется проверка версии — просто импортируем модуль
     if not CHECK_VER and not force_check:
         try:
+            # Модуль не найден — выводим инструкцию для пользователя и завершаем работу
             return importlib.import_module(module_name)
         except ImportError:
-            # Модуль не найден — выводим инструкцию для пользователя и завершаем работу
+            # --- Модуль не найден — выводим инструкцию для пользователя и завершаем работу ---
+            log_debug(f"import_or_update: ImportError: {module_name} ({pypi_name}) не найден")
             print(f"\n[!] Необходимый модуль {pypi_name} не установлен. Установите его вручную командой:\n    pip install {pypi_name}\nРабота невозможна.")
             sys.exit(1)
 
@@ -137,17 +139,19 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
                 try:
                     installed = get_version(pypi_name)
                 except PackageNotFoundError:
-                    # Если не удалось получить версию через metadata — пробуем через __version__
+                    # --- Если не удалось получить версию через metadata — пробуем через __version__ ---
                     installed = getattr(module, '__version__', None)
                 # Если установленная версия меньше актуальной — обновляем
                 if installed and parse_version(installed) < parse_version(latest):
                     print()
                     print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
+                    log_debug(f"import_or_update: обновление {pypi_name}: {installed} → {latest}")
                     subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
                     module = importlib.reload(module)
             print(" - OK")
         except Exception as e:
-            # Ошибка при проверке или обновлении — выводим причину, но не прерываем работу
+            # --- Ошибка при проверке или обновлении — выводим причину, но не прерываем работу ---
+            log_debug(f"import_or_update: ошибка проверки/обновления {pypi_name}: {e}")
             print(f"[!] Не удалось проверить или обновить {pypi_name}: {e}")
         # Проверяем минимально требуемую версию, если указана
         if min_version:
@@ -158,15 +162,16 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
             if installed and parse_version(installed) < parse_version(min_version):
                 print()
                 print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
+                log_debug(f"import_or_update: обновление до min_version {min_version}")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
                 module = importlib.reload(module)
         return module
     except ImportError:
-        # Модуль не установлен — пробуем установить через pip
+        # --- Модуль не установлен — пробуем установить через pip ---
+        log_debug(f"import_or_update: ImportError: {module_name} ({pypi_name}) не установлен, пробуем установить через pip")
         print(f"[!] {pypi_name} не установлен. Устанавливаем...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pypi_name])
         return importlib.import_module(module_name)
-
 
 # --- Импорт сторонних модулей с автоматической установкой/обновлением ---
 yt_dlp = import_or_update('yt_dlp', force_check=True)
