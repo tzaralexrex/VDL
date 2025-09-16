@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 # Universal Video Downloader with Cookie Browser Support
 # Скрипт для скачивания видео с поддержкой куки, плейлистов, форматов, субтитров и глав.
 
@@ -28,7 +30,6 @@ elif system == "darwin":
     # MacOS: msvcrt и ctypes не нужны
     pass
 
-
 # --- Глобальные настройки и константы ---
 DEBUG = 1  # Включение/выключение отладки
 DEBUG_APPEND = 1 # 0 = перезаписывать лог, 1 = дописывать к существующему
@@ -55,15 +56,13 @@ CHECK_VER = 1  # Проверять версии зависимостей (1) и
 MIN_DISPLAY_MS = 200           # Минимальная длительность блока субтитров, ms
 INTER_CAPTION_GAP_MS = 0       # Межтитровый интервал, ms
 
-
-@dataclass
 # Класс для хранения информации о субтитре (индекс, время начала/конца, текст)
+@dataclass
 class Caption:
     idx: int
     start: int
     end: int
     text: str
-
 
 # Регулярное выражение для разбора блоков субтитров SRT
 SRT_BLOCK_RE = re.compile(
@@ -1783,7 +1782,8 @@ def mux_mkv_with_subs_and_chapters(
 
     print(Fore.YELLOW + f"\nВыполняется объединение дорожек и глав в MKV..." + Style.RESET_ALL)
     try:
-        subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
+        # subprocess.run(' '.join(ffmpeg_cmd), shell=True, check=True)
+        subprocess.run(ffmpeg_cmd, check=True)
         print(Fore.GREEN + f"Файл успешно собран: {final_mkv}" + Style.RESET_ALL)
         try:
             orig_file = safe_join(output_path_abs, downloaded_file) if downloaded_file else None
