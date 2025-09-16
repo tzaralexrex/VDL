@@ -71,7 +71,6 @@ SRT_BLOCK_RE = re.compile(
     re.DOTALL
 )
 
-
 # --- Глобальные переменные для хранения пользовательских настроек ---
 USER_SELECTED_SUB_LANGS = []           # Языки субтитров для интеграции
 USER_SELECTED_SUB_FORMAT = None        # Формат субтитров
@@ -86,13 +85,40 @@ USER_SELECTED_CHAPTER_FILENAME = None  # Имя файла глав
 USER_SELECTED_OUTPUT_NAME = None       # Имя итогового файла
 USER_SELECTED_OUTPUT_PATH = None       # Путь для сохранения
 
-
 # --- Импорт функций для получения версии пакета (совместимость с Python <3.8) ---
 try:
     from importlib.metadata import version as get_version, PackageNotFoundError
 except ImportError:
     from importlib_metadata import version as get_version, PackageNotFoundError  # type: ignore
 
+def log_debug(message):
+    """
+    Записывает сообщение в файл журнала отладки, если DEBUG включён.
+    Поддержка: Windows, MacOS, Linux.
+    """
+    global debug_file_initialized
+
+    # Если отладка выключена — ничего не делаем
+    if not DEBUG:
+        return
+
+    # Формируем строку для записи в лог
+    log_line = f"[{datetime.now()}] {message}\n"
+
+    # Если файл ещё не инициализирован — открываем в нужном режиме
+    if not debug_file_initialized:
+        mode = 'a' if DEBUG_APPEND else 'w'
+        with open(DEBUG_FILE, mode, encoding='utf-8') as f:
+            if DEBUG_APPEND:
+                # В режиме дописывания — добавляем разделитель и заголовок нового сеанса
+                f.write(f"\n{'='*60}\n--- Начинается новый сеанс отладки [{datetime.now()}] ---\n")
+            # В режиме 'w' — просто записываем первую строку
+            f.write(log_line)
+        debug_file_initialized = True
+    else:
+        # Если файл уже инициализирован — просто дописываем строку
+        with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
+            f.write(log_line)
 
 # --- Импорт сторонних модулей через универсальную функцию ---
 requests = importlib.import_module('requests')
@@ -244,35 +270,6 @@ def detect_ffmpeg_path():
         return system_path
     log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH.")
     return None
-
-def log_debug(message):
-    """
-    Записывает сообщение в файл журнала отладки, если DEBUG включён.
-    Поддержка: Windows, MacOS, Linux.
-    """
-    global debug_file_initialized
-
-    # Если отладка выключена — ничего не делаем
-    if not DEBUG:
-        return
-
-    # Формируем строку для записи в лог
-    log_line = f"[{datetime.now()}] {message}\n"
-
-    # Если файл ещё не инициализирован — открываем в нужном режиме
-    if not debug_file_initialized:
-        mode = 'a' if DEBUG_APPEND else 'w'
-        with open(DEBUG_FILE, mode, encoding='utf-8') as f:
-            if DEBUG_APPEND:
-                # В режиме дописывания — добавляем разделитель и заголовок нового сеанса
-                f.write(f"\n{'='*60}\n--- Начинается новый сеанс отладки [{datetime.now()}] ---\n")
-            # В режиме 'w' — просто записываем первую строку
-            f.write(log_line)
-        debug_file_initialized = True
-    else:
-        # Если файл уже инициализирован — просто дописываем строку
-        with open(DEBUG_FILE, 'a', encoding='utf-8') as f:
-            f.write(log_line)
 
 def clean_url_by_platform(platform: str, url: str) -> str:
     """
