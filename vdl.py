@@ -2502,22 +2502,37 @@ def download_tasks(tasks):
             print(Fore.RED + "Не удалось получить ссылку для видео. Пропуск." + Style.RESET_ALL)
             continue
 
-        # Получаем info для текущего видео
-        try:
-            entry_info = safe_get_video_info(entry_url, task["platform"], cookie_file_to_use)
-        except DownloadError as e:
-            if is_video_unavailable_error(e):
-                print(Fore.YELLOW + f"Видео недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
-                log_debug(f"Видео недоступно: {e}")
-                continue
-            else:
+        entry_info = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                entry_info = safe_get_video_info(entry_url, task["platform"], task["cookie_file_to_use"])
+                break
+            except DownloadError as e:
+                err_text = str(e).lower()
+                if is_video_unavailable_error(e):
+                    print(Fore.YELLOW + f"Видео недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                    log_debug(f"Видео недоступно: {e}")
+                    break
+                if "cannot parse data" in err_text or "extractorerror" in err_text:
+                    print(Fore.RED + "Ошибка: yt-dlp не может обработать данные с этой ссылки. Возможно, сайт изменил структуру или требуется обновление yt-dlp." + Style.RESET_ALL)
+                    print(Fore.YELLOW + "Попробуйте обновить yt-dlp или использовать другую ссылку." + Style.RESET_ALL)
+                    break
+                if "network" in err_text or "timeout" in err_text or "connection" in err_text or "http error" in err_text:
+                    print(Fore.RED + f"Ошибка сети при получении информации о видео (попытка {attempt}/{MAX_RETRIES}). Проверьте интернет и попробуйте снова." + Style.RESET_ALL)
+                    if attempt < MAX_RETRIES:
+                        time.sleep(5)
+                        continue
+                    else:
+                        break
                 print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
                 log_debug(f"Ошибка загрузки видео: {e}")
-                continue
-        except Exception as e:
-            print(Fore.RED + f"Непредвидённая ошибка при скачивании видео: {e}" + Style.RESET_ALL)
-            log_debug(f"Ошибка при скачивании видео: {e}\n{traceback.format_exc()}")
-            continue
+                break
+            except Exception as e:
+                print(Fore.RED + f"Непредвидённая ошибка при скачивании видео: {e}" + Style.RESET_ALL)
+                log_debug(f"Ошибка при скачивании видео: {e}\n{traceback.format_exc()}")
+                break
+        if not entry_info:
+            continue  # если не удалось получить entry_info, пропускаем видео
 
         formats = entry_info.get('formats', [])
 
@@ -2804,7 +2819,7 @@ def main():
         platform, url = extract_platform_and_url(raw_url)
         log_debug(f"Определена платформа: {platform}, очищенный URL: {url}")
 
-        # --- Единоразовая проверка куки и ссылки ---
+        # --- Единоразовая проверка куки и ссылки с повторными попытками ---
         cookie_map = {
             "youtube":  COOKIES_YT,
             "facebook": COOKIES_FB,
@@ -2813,20 +2828,47 @@ def main():
             "vk":       COOKIES_VK,
         }
         cookie_file_to_use = None
-        if platform in cookie_map:
-            cookie_file_to_use = get_cookies_for_platform(platform, cookie_map[platform], url)
-        else:
-            cookie_file_to_use = None
+        info = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                if platform in cookie_map:
+                    cookie_file_to_use = get_cookies_for_platform(platform, cookie_map[platform], url)
+                else:
+                    cookie_file_to_use = None
 
-        try:
-            info = get_video_info(url, platform, cookie_file_to_use)
-        except DownloadError as e:
-            err_text = str(e).lower()
-            if "not a valid url" in err_text or "is not a valid url" in err_text:
-                print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
+                info = get_video_info(url, platform, cookie_file_to_use)
+                break  # если успешно, выходим из цикла
+            except DownloadError as e:
+                err_text = str(e).lower()
+                if "not a valid url" in err_text or "is not a valid url" in err_text:
+                    print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
+                    raw_url = None
+                    break
+                if "cannot parse data" in err_text or "extractorerror" in err_text:
+                    print(Fore.RED + "Ошибка: yt-dlp не может обработать данные с этой ссылки. Возможно, сайт изменил структуру или требуется обновление yt-dlp." + Style.RESET_ALL)
+                    print(Fore.YELLOW + "Попробуйте обновить yt-dlp или использовать другую ссылку." + Style.RESET_ALL)
+                    raw_url = None
+                    break
+                if "network" in err_text or "timeout" in err_text or "connection" in err_text or "http error" in err_text:
+                    print(Fore.RED + f"Ошибка сети при получении информации о видео (попытка {attempt}/{MAX_RETRIES}). Проверьте интернет и попробуйте снова." + Style.RESET_ALL)
+                    if attempt < MAX_RETRIES:
+                        time.sleep(5)
+                        continue
+                    else:
+                        raw_url = None
+                        break
+                print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
                 raw_url = None
-                continue
-            raise
+                break
+            except Exception as e:
+                print(Fore.RED + f"Непредвидённая ошибка: {e}" + Style.RESET_ALL)
+                log_debug(f"main: ошибка при проверке ссылки/куки: {e}\n{traceback.format_exc()}")
+                raw_url = None
+                break
+
+        if not info:
+            continue  # если не удалось получить info, запрашиваем ссылку заново
+
         # После успешной проверки raw_url больше не нужен
         raw_url = None
         break
