@@ -911,6 +911,9 @@ def ask_and_select_subtitles(info, auto_mode=False):
             if normalize_auto_subs:
                 keep_ans = input(Fore.CYAN + "Сохранять оригинальные автоматические субтитры? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
                 keep_original_auto_subs = (keep_ans == "1")
+            # --- Дописывать ли .auto к автоматическим субтитрам ---
+            auto_suffix_ans = input(Fore.CYAN + "Дописать суффикс .auto к автоматическим субтитрам? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            add_auto_suffix = (auto_suffix_ans != "0")
 
     print(Fore.GREEN + f"Выбранные языки субтитров: {', '.join(selected_langs)}" + Style.RESET_ALL)
     log_debug(f"Выбранные субтитры: {selected_langs}, автоматические: {sorted(download_automatics)}")
@@ -944,7 +947,9 @@ def ask_and_select_subtitles(info, auto_mode=False):
         'subtitleslangs': selected_langs,
         'subtitlesformat': sub_format,
         'normalize_auto_subs': normalize_auto_subs if write_automatic else False,
-        'keep_original_auto_subs': keep_original_auto_subs if write_automatic else False
+        'keep_original_auto_subs': keep_original_auto_subs if write_automatic else False,
+        'automatic_subtitles_langs': sorted(download_automatics) if write_automatic else [],
+        'add_auto_suffix': add_auto_suffix if write_automatic else True  # по умолчанию True
     }
 
 def select_output_folder(auto_mode=False):
@@ -1173,14 +1178,32 @@ def ask_output_format(default_format, auto_mode=False, subtitle_options=None, ha
         log_debug(f"Неверный выбор формата. Используется дефолтный: {default_format}")
         return default_format
 
-def phook(d, last_file_ref):
+def phook(d, last_file_ref, subtitle_options=None, output_name=None, output_path=None):
     """
     Хук для yt-dlp: сохраняет имя скачанного файла.
-    Поддержка: Windows, MacOS, Linux.
+    Если скачан файл автоматических субтитров — сразу нормализует его.
     """
     if d['status'] == 'finished':
         last_file_ref[0] = d.get('filename')
         log_debug(f"Файл скачан: {last_file_ref[0]}")
+        # --- Нормализация автоматических субтитров сразу после скачивания ---
+        if subtitle_options and subtitle_options.get('writeautomaticsub'):
+            normalize_auto = subtitle_options.get('normalize_auto_subs', False)
+            keep_bak = subtitle_options.get('keep_original_auto_subs', False)
+            sub_format = subtitle_options.get('subtitlesformat', 'srt')
+            auto_langs = subtitle_options.get('automatic_subtitles_langs', [])
+            fname = d.get('filename')
+            # Проверяем, что это файл автоматических субтитров
+            for lang in auto_langs:
+                expected_file = str(Path(output_path) / f"{output_name}.{lang}.{sub_format}")
+                if fname and fname.lower() == expected_file.lower() and normalize_auto and sub_format == "srt":
+                    try:
+                        normalize_srt_file(fname, overwrite=True, backup=keep_bak)
+                        print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {fname}" + Style.RESET_ALL)
+                        log_debug(f"Автоматические субтитры для '{lang}' нормализованы: {fname}")
+                    except Exception as e:
+                        print(Fore.RED + f"Ошибка нормализации субтитров {fname}: {e}" + Style.RESET_ALL)
+                        log_debug(f"Ошибка нормализации субтитров {fname}: {e}")
 
 def download_video(
         url, video_id, audio_id,
@@ -1277,7 +1300,7 @@ def download_video(
     # ---------------- 3. progress-hook & подготовка --------------------
     Path(output_path).mkdir(parents=True, exist_ok=True)
     last_file = [None]
-    ydl_opts['progress_hooks'] = [lambda d: phook(d, last_file)]
+    ydl_opts['progress_hooks'] = [lambda d: phook(d, last_file, subtitle_options, output_name, output_path)]
  
     # ---------------- 4. Загрузка с повторами --------------------------
     for attempt in range(1, MAX_RETRIES + 1):
@@ -1289,21 +1312,6 @@ def download_video(
             # ---- поиск итогового файла ----
             candidate = last_file[0] or full_tmpl.replace('%(ext)s', merge_format)
             if Path(candidate).is_file():
-                return candidate
-            
-            # ---- поиск итогового файла ----
-            candidate = last_file[0] or full_tmpl.replace('%(ext)s', merge_format)
-            if Path(candidate).is_file():
-                # --- Новый блок: нормализация субтитров сразу после скачивания ---
-                if subtitle_options and subtitle_options.get('writeautomaticsub'):
-                    normalize_auto = subtitle_options.get('normalize_auto_subs', False)
-                    keep_bak = subtitle_options.get('keep_original_auto_subs', False)
-                    sub_format = subtitle_options.get('subtitlesformat', 'srt')
-                    for lang in subtitle_options.get('subtitleslangs', []):
-                        sub_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
-                        if sub_file.exists() and normalize_auto and sub_format == "srt":
-                            normalize_srt_file(str(sub_file), overwrite=True, backup=keep_bak)
-                            print(Fore.GREEN + f"Автоматические субтитры для '{lang}' нормализованы: {sub_file}" + Style.RESET_ALL)
                 return candidate
 
             base_low = output_name.lower()
@@ -2564,6 +2572,26 @@ def download_tasks(tasks):
         )
         if downloaded_file:
             print(Fore.GREEN + f"Видео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+            # --- Переименование автоматических субтитров с .auto ---
+            subtitle_download_options = task.get("subtitle_options")
+            output_name = output_name  # уже определён выше
+            output_path = task["folder"]
+            if subtitle_download_options:
+                auto_suffix = subtitle_download_options.get('add_auto_suffix', True)
+                auto_langs = subtitle_download_options.get('automatic_subtitles_langs', [])
+                sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
+                if auto_suffix and output_name and output_path:
+                    for lang in auto_langs:
+                        orig_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
+                        new_file = Path(output_path) / f"{output_name}.{lang}.auto.{sub_format}"
+                        if orig_file.exists():
+                            try:
+                                orig_file.rename(new_file)
+                                print(Fore.YELLOW + f"Файл автоматических субтитров переименован: {new_file.name}" + Style.RESET_ALL)
+                                log_debug(f"Переименован файл автоматических субтитров: {orig_file} -> {new_file}")
+                            except Exception as e:
+                                print(Fore.RED + f"Ошибка при переименовании субтитров: {e}" + Style.RESET_ALL)
+                                log_debug(f"Ошибка при переименовании субтитров: {e}")
         else:
             print(Fore.RED + f"Ошибка при скачивании видео." + Style.RESET_ALL)
 
@@ -3594,6 +3622,29 @@ def main():
                     log_debug("Ошибка: итоговый файл для интеграции не найден.")
             else:
                 log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.") 
+    # --- Переименование автоматических субтитров с .auto ---
+    try:
+        # subtitle_download_options может быть None
+        if 'subtitle_download_options' in locals() and subtitle_download_options:
+            auto_suffix = subtitle_download_options.get('add_auto_suffix', True)
+            auto_langs = subtitle_download_options.get('automatic_subtitles_langs', [])
+            sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
+            output_name = USER_SELECTED_OUTPUT_NAME if 'USER_SELECTED_OUTPUT_NAME' in locals() else None
+            output_path = USER_SELECTED_OUTPUT_PATH if 'USER_SELECTED_OUTPUT_PATH' in locals() else None
+            if auto_suffix and output_name and output_path:
+                for lang in auto_langs:
+                    orig_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
+                    new_file = Path(output_path) / f"{output_name}.{lang}.auto.{sub_format}"
+                    if orig_file.exists():
+                        try:
+                            orig_file.rename(new_file)
+                            print(Fore.YELLOW + f"Файл автоматических субтитров переименован: {new_file.name}" + Style.RESET_ALL)
+                            log_debug(f"Переименован файл автоматических субтитров: {orig_file} -> {new_file}")
+                        except Exception as e:
+                            print(Fore.RED + f"Ошибка при переименовании субтитров: {e}" + Style.RESET_ALL)
+                            log_debug(f"Ошибка при переименовании субтитров: {e}")
+    except Exception as e:
+        log_debug(f"Ошибка при финальном переименовании автоматических субтитров: {e}")
     except KeyboardInterrupt:
         print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
         log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
