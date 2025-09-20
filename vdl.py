@@ -58,6 +58,8 @@ CHECK_VER = 1  # Проверять версии зависимостей (1) и
 MIN_DISPLAY_MS = 200           # Минимальная длительность блока субтитров, ms
 INTER_CAPTION_GAP_MS = 0       # Межтитровый интервал, ms
 
+debug_file_initialized = False  # Флаг инициализации файла журнала отладки
+
 # Класс для хранения информации о субтитре (индекс, время начала/конца, текст)
 @dataclass
 class Caption:
@@ -221,8 +223,6 @@ except ImportError:
     filedialog = None
 
 init(autoreset=True)  # Инициализация colorama и автоматический сброс цвета после каждого print
-
-debug_file_initialized = False  # Флаг инициализации файла журнала отладки
 
 ## --- Проверка валидности cookie-файла для платформы ---
 def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
@@ -2846,34 +2846,108 @@ def main():
     audio_codec = ''
     saved_list_path = None
 
-    try:
-        # platform и url уже определены выше!
-        if platform == "youtube" and (is_youtube_channel_url(url) or is_youtube_playlists_url(url)):
-            selected_video_ids = {}
+#    try:
+    # platform и url уже определены выше!
+    if platform == "youtube" and (is_youtube_channel_url(url) or is_youtube_playlists_url(url)):
+        selected_video_ids = {}
 
-            channel_url = url
-            if is_youtube_playlists_url(url):
-                channel_url = re.sub(r'/playlists/?$', '', url)
-            print(Fore.YELLOW + "Получаем информацию по разделам канала..." + Style.RESET_ALL)
-            info_channel = safe_get_video_info(channel_url, platform, cookie_file_to_use)
-            channel_entries = info_channel.get('entries', [])
-            sections = []
-            for idx, entry in enumerate(channel_entries, 1):
-                title = entry.get('title') or entry.get('id') or entry.get('url') or f"Раздел {idx}"
-                sections.append((idx, title, entry))
+        channel_url = url
+        if is_youtube_playlists_url(url):
+            channel_url = re.sub(r'/playlists/?$', '', url)
+        print(Fore.YELLOW + "Получаем информацию по разделам канала..." + Style.RESET_ALL)
+        info_channel = safe_get_video_info(channel_url, platform, cookie_file_to_use)
+        channel_entries = info_channel.get('entries', [])
+        sections = []
+        for idx, entry in enumerate(channel_entries, 1):
+            title = entry.get('title') or entry.get('id') or entry.get('url') or f"Раздел {idx}"
+            sections.append((idx, title, entry))
 
-            playlists_struct = []
-            info_playlists = None
-            section_playlists = []
+        playlists_struct = []
+        info_playlists = None
+        section_playlists = []
 
-            # --- Сперва плейлисты, если ссылка на /playlists ---
-            if is_youtube_playlists_url(url):
-                print(Fore.YELLOW + "\nОбнаружена ссылка на раздел плейлистов канала YouTube." + Style.RESET_ALL)
+        # --- Сперва плейлисты, если ссылка на /playlists ---
+        if is_youtube_playlists_url(url):
+            print(Fore.YELLOW + "\nОбнаружена ссылка на раздел плейлистов канала YouTube." + Style.RESET_ALL)
+            playlists_url = get_youtube_playlists_url(channel_url)
+            print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
+            info_playlists = safe_get_video_info(playlists_url, platform, cookie_file_to_use)
+            playlists_entries = info_playlists.get('entries', [])
+            # Выводим список плейлистов
+            playlist_infos = []
+            for idx, pl in enumerate(playlists_entries, 1):
+                pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
+                pl_url = pl.get('url') or pl.get('webpage_url')
+                count = 0
+                if pl_url:
+                    try:
+                        pl_info = safe_get_video_info(pl_url, platform, cookie_file_to_use)
+                        count = len(pl_info.get('entries', []))
+                    except Exception:
+                        count = 0
+                playlist_infos.append((idx, pl_title, count))
+            print(Fore.MAGENTA + "\nПлейлисты канала:" + Style.RESET_ALL)
+            for idx, pl_title, count in playlist_infos:
+                print(f"{idx}: {pl_title} ({count} видео)")
+            sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через пробел, запятую, диапазоны через тире; Enter — все): " + Style.RESET_ALL).strip()
+            if not sel_pl:
+                selected_playlists = playlists_entries
+            else:
+                selected_pl_indexes = parse_selection(sel_pl, len(playlists_entries))
+                selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
+            playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
+
+            # После выбора плейлистов спрашиваем про разделы
+            answer = input(Fore.CYAN + "\nХотите также скачать видео из других разделов канала (Видео, Shorts и т.д.), которые не входят в плейлисты? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+            want_sections = (answer == "1")
+            if want_sections:
+                print(Fore.MAGENTA + "\nРазделы канала:" + Style.RESET_ALL)
+                for idx, title, entry in sections:
+                    count = len(entry.get('entries', [])) if entry.get('entries') else 0
+                    print(f"{idx}: {title} ({count} видео)")
+                sel = input(Fore.CYAN + "Введите номера разделов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+                if not sel:
+                    selected_sections = [entry for _, _, entry in sections]
+                else:
+                    selected_indexes = [int(s) for s in re.split(r'[ ,;]+', sel) if s.strip().isdigit()]
+                    selected_sections = [entry for idx, _, entry in sections if idx in selected_indexes]
+                for idx, section in enumerate(selected_sections, 1):
+                    title = section.get('title') or section.get('id') or section.get('url') or f"Раздел {idx}"
+                    section_entries = section.get('entries', [])
+                    section_playlists.append({
+                        "title": title,
+                        "videos": section_entries,
+                        "sub_playlists": []
+                    })
+        else:
+            # Ссылка на канал, сперва разделы
+            print(Fore.YELLOW + "\nОбнаружена ссылка на канал YouTube." + Style.RESET_ALL)
+            print(Fore.MAGENTA + "\nРазделы канала:" + Style.RESET_ALL)
+            for idx, title, entry in sections:
+                count = len(entry.get('entries', [])) if entry.get('entries') else 0
+                print(f"{idx}: {title} ({count} видео)")
+            sel = input(Fore.CYAN + "Введите номера разделов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
+            if not sel:
+                selected_sections = [entry for _, _, entry in sections]
+            else:
+                selected_indexes = [int(s) for s in re.split(r'[ ,;]+', sel) if s.strip().isdigit()]
+                selected_sections = [entry for idx, _, entry in sections if idx in selected_indexes]
+            for idx, section in enumerate(selected_sections, 1):
+                title = section.get('title') or section.get('id') or section.get('url') or f"Раздел {idx}"
+                section_entries = section.get('entries', [])
+                section_playlists.append({
+                    "title": title,
+                    "videos": section_entries,
+                    "sub_playlists": []
+                })
+            # После выбора разделов спрашиваем про плейлисты
+            answer = input(Fore.CYAN + "\nХотите также скачать видео из плейлистов этого канала? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            want_playlists = (answer != "0")
+            if want_playlists:
                 playlists_url = get_youtube_playlists_url(channel_url)
                 print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
                 info_playlists = safe_get_video_info(playlists_url, platform, cookie_file_to_use)
                 playlists_entries = info_playlists.get('entries', [])
-                # Выводим список плейлистов
                 playlist_infos = []
                 for idx, pl in enumerate(playlists_entries, 1):
                     pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
@@ -2897,581 +2971,126 @@ def main():
                     selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
                 playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
 
-                # После выбора плейлистов спрашиваем про разделы
-                answer = input(Fore.CYAN + "\nХотите также скачать видео из других разделов канала (Видео, Shorts и т.д.), которые не входят в плейлисты? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
-                want_sections = (answer == "1")
-                if want_sections:
-                    print(Fore.MAGENTA + "\nРазделы канала:" + Style.RESET_ALL)
-                    for idx, title, entry in sections:
-                        count = len(entry.get('entries', [])) if entry.get('entries') else 0
-                        print(f"{idx}: {title} ({count} видео)")
-                    sel = input(Fore.CYAN + "Введите номера разделов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
-                    if not sel:
-                        selected_sections = [entry for _, _, entry in sections]
-                    else:
-                        selected_indexes = [int(s) for s in re.split(r'[ ,;]+', sel) if s.strip().isdigit()]
-                        selected_sections = [entry for idx, _, entry in sections if idx in selected_indexes]
-                    for idx, section in enumerate(selected_sections, 1):
-                        title = section.get('title') or section.get('id') or section.get('url') or f"Раздел {idx}"
-                        section_entries = section.get('entries', [])
-                        section_playlists.append({
-                            "title": title,
-                            "videos": section_entries,
-                            "sub_playlists": []
-                        })
-            else:
-                # Ссылка на канал, сперва разделы
-                print(Fore.YELLOW + "\nОбнаружена ссылка на канал YouTube." + Style.RESET_ALL)
-                print(Fore.MAGENTA + "\nРазделы канала:" + Style.RESET_ALL)
-                for idx, title, entry in sections:
-                    count = len(entry.get('entries', [])) if entry.get('entries') else 0
-                    print(f"{idx}: {title} ({count} видео)")
-                sel = input(Fore.CYAN + "Введите номера разделов для скачивания (через запятую, Enter — все): " + Style.RESET_ALL).strip()
-                if not sel:
-                    selected_sections = [entry for _, _, entry in sections]
-                else:
-                    selected_indexes = [int(s) for s in re.split(r'[ ,;]+', sel) if s.strip().isdigit()]
-                    selected_sections = [entry for idx, _, entry in sections if idx in selected_indexes]
-                for idx, section in enumerate(selected_sections, 1):
-                    title = section.get('title') or section.get('id') or section.get('url') or f"Раздел {idx}"
-                    section_entries = section.get('entries', [])
-                    section_playlists.append({
-                        "title": title,
-                        "videos": section_entries,
-                        "sub_playlists": []
-                    })
-                # После выбора разделов спрашиваем про плейлисты
-                answer = input(Fore.CYAN + "\nХотите также скачать видео из плейлистов этого канала? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                want_playlists = (answer != "0")
-                if want_playlists:
-                    playlists_url = get_youtube_playlists_url(channel_url)
-                    print(Fore.YELLOW + "Получаем информацию по плейлистам канала..." + Style.RESET_ALL)
-                    info_playlists = safe_get_video_info(playlists_url, platform, cookie_file_to_use)
-                    playlists_entries = info_playlists.get('entries', [])
-                    playlist_infos = []
-                    for idx, pl in enumerate(playlists_entries, 1):
-                        pl_title = pl.get('title') or pl.get('id') or pl.get('url') or f"Плейлист {idx}"
-                        pl_url = pl.get('url') or pl.get('webpage_url')
-                        count = 0
-                        if pl_url:
-                            try:
-                                pl_info = safe_get_video_info(pl_url, platform, cookie_file_to_use)
-                                count = len(pl_info.get('entries', []))
-                            except Exception:
-                                count = 0
-                        playlist_infos.append((idx, pl_title, count))
-                    print(Fore.MAGENTA + "\nПлейлисты канала:" + Style.RESET_ALL)
-                    for idx, pl_title, count in playlist_infos:
-                        print(f"{idx}: {pl_title} ({count} видео)")
-                    sel_pl = input(Fore.CYAN + "Введите номера плейлистов для скачивания (через пробел, запятую, диапазоны через тире; Enter — все): " + Style.RESET_ALL).strip()
-                    if not sel_pl:
-                        selected_playlists = playlists_entries
-                    else:
-                        selected_pl_indexes = parse_selection(sel_pl, len(playlists_entries))
-                        selected_playlists = [pl for idx, pl in enumerate(playlists_entries, 1) if idx in selected_pl_indexes]
-                    playlists_struct = collect_playlists(selected_playlists, platform, info_playlists.get('__cookiefile__'))
+        # Собираем задачи
+        all_tasks = []
+        output_path = select_output_folder(auto_mode=False)
+        if section_playlists:
+            all_tasks += collect_user_choices_for_playlists(
+                section_playlists, output_path, auto_mode, platform, args, info_channel.get('__cookiefile__'), selected_video_ids=selected_video_ids
+            )
+        if playlists_struct:
+            all_tasks += collect_user_choices_for_playlists(
+                playlists_struct, output_path, auto_mode, platform, args, info_playlists.get('__cookiefile__'), selected_video_ids=selected_video_ids
+            )
+        if all_tasks:
+            print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
+            download_tasks(all_tasks)
+            print(Fore.CYAN + "\nВсе выбранные видео обработаны." + Style.RESET_ALL)
+        else:
+            print(Fore.YELLOW + "Нет выбранных видео для скачивания." + Style.RESET_ALL)
+        return
 
-            # Собираем задачи
-            all_tasks = []
+    info = safe_get_video_info(url, platform, cookie_file_to_use)
+    cookie_file_to_use = info.get('__cookiefile__')
+
+    # --- Обработка плейлиста ---
+    if info.get('_type') == 'playlist' or 'entries' in info:
+        entries = info.get('entries', [])
+        log_debug(f"main: entries (type={type(entries)}, len={len(entries) if hasattr(entries, '__len__') else 'N/A'}): {str(entries)[:500]}")
+        # --- Строим структуру плейлистов ---
+        print(Fore.YELLOW + "\nАнализируем структуру канала/плейлиста, ищем вложенные плейлисты..." + Style.RESET_ALL)
+        playlists_struct = collect_playlists(info.get('entries', []), platform, cookie_file_to_use)
+        log_debug(f"main: playlists_struct (type={type(playlists_struct)}, len={len(playlists_struct) if hasattr(playlists_struct, '__len__') else 'N/A'}): {str(playlists_struct)[:500]}")
+
+        if playlists_struct and all(
+            pl.get("videos") == [] and pl.get("sub_playlists") == [] and pl.get("url")
+            for pl in playlists_struct
+        ):
+            log_debug("main: Ветка — только плейлисты верхнего уровня (страница /playlists)")
+            print(Fore.YELLOW + "\nОбнаружены плейлисты канала! Будет произведён обход по каждому из них." + Style.RESET_ALL)
             output_path = select_output_folder(auto_mode=False)
-            if section_playlists:
-                all_tasks += collect_user_choices_for_playlists(
-                    section_playlists, output_path, auto_mode, platform, args, info_channel.get('__cookiefile__'), selected_video_ids=selected_video_ids
-                )
-            if playlists_struct:
-                all_tasks += collect_user_choices_for_playlists(
-                    playlists_struct, output_path, auto_mode, platform, args, info_playlists.get('__cookiefile__'), selected_video_ids=selected_video_ids
-                )
-            if all_tasks:
-                print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
-                download_tasks(all_tasks)
-                print(Fore.CYAN + "\nВсе выбранные видео обработаны." + Style.RESET_ALL)
-            else:
-                print(Fore.YELLOW + "Нет выбранных видео для скачивания." + Style.RESET_ALL)
+            USER_SELECTED_OUTPUT_PATH = output_path
+            print(Fore.YELLOW + "\nНайдены плейлисты:" + Style.RESET_ALL)
+            print_playlists_tree(playlists_struct)
+            tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
+            print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
+            download_tasks(tasks)
+            print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
             return
 
-        info = safe_get_video_info(url, platform, cookie_file_to_use)
-        cookie_file_to_use = info.get('__cookiefile__')
-
-        # --- Обработка плейлиста ---
-        if info.get('_type') == 'playlist' or 'entries' in info:
-            entries = info.get('entries', [])
-            log_debug(f"main: entries (type={type(entries)}, len={len(entries) if hasattr(entries, '__len__') else 'N/A'}): {str(entries)[:500]}")
-            # --- Строим структуру плейлистов ---
-            print(Fore.YELLOW + "\nАнализируем структуру канала/плейлиста, ищем вложенные плейлисты..." + Style.RESET_ALL)
-            playlists_struct = collect_playlists(info.get('entries', []), platform, cookie_file_to_use)
-            log_debug(f"main: playlists_struct (type={type(playlists_struct)}, len={len(playlists_struct) if hasattr(playlists_struct, '__len__') else 'N/A'}): {str(playlists_struct)[:500]}")
-
-            if playlists_struct and all(
-                pl.get("videos") == [] and pl.get("sub_playlists") == [] and pl.get("url")
-                for pl in playlists_struct
-            ):
-                log_debug("main: Ветка — только плейлисты верхнего уровня (страница /playlists)")
-                print(Fore.YELLOW + "\nОбнаружены плейлисты канала! Будет произведён обход по каждому из них." + Style.RESET_ALL)
-                output_path = select_output_folder(auto_mode=False)
-                USER_SELECTED_OUTPUT_PATH = output_path
-                print(Fore.YELLOW + "\nНайдены плейлисты:" + Style.RESET_ALL)
-                print_playlists_tree(playlists_struct)
-                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
-                print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
-                download_tasks(tasks)
-                print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
+        if not has_nested_playlists(playlists_struct) and len(playlists_struct) == 1:
+            log_debug("main: Ветка — один плейлист, без вложенных")
+            pl = playlists_struct[0]
+            # Обычный режим, когда videos — это видео
+            all_videos = []
+            for pl in playlists_struct:
+                all_videos.extend(pl["videos"])
+            log_debug(f"main: all_videos (len={len(all_videos)}): {str(all_videos)[:500]}")
+            print(Fore.YELLOW + f"\nВсего найдено видео: {len(all_videos)}" + Style.RESET_ALL)
+            if not all_videos:
+                print(Fore.RED + "В канале не найдено ни одного видео." + Style.RESET_ALL)
                 return
-
-            if not has_nested_playlists(playlists_struct) and len(playlists_struct) == 1:
-                log_debug("main: Ветка — один плейлист, без вложенных")
-                pl = playlists_struct[0]
-                # Обычный режим, когда videos — это видео
-                all_videos = []
-                for pl in playlists_struct:
-                    all_videos.extend(pl["videos"])
-                log_debug(f"main: all_videos (len={len(all_videos)}): {str(all_videos)[:500]}")
-                print(Fore.YELLOW + f"\nВсего найдено видео: {len(all_videos)}" + Style.RESET_ALL)
-                if not all_videos:
-                    print(Fore.RED + "В канале не найдено ни одного видео." + Style.RESET_ALL)
-                    return
-                playlist_title = info.get('title') or "playlist"
-                saved_list_path = print_playlist_paginated(all_videos, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=playlist_title)
-            else:
-                # Есть вложенные плейлисты
-                log_debug("main: Ветка — есть вложенные плейлисты")
-                log_debug(f"main: playlists_struct (подробно): {str(playlists_struct)[:1000]}")
-                print(Fore.YELLOW + "\nОбнаружены вложенные плейлисты! Будет произведён обход по каждому из них." + Style.RESET_ALL)
-                output_path = select_output_folder(auto_mode=False)
-                USER_SELECTED_OUTPUT_PATH = output_path
-
-                # Выводим список всех плейлистов с количеством видео
-                print(Fore.YELLOW + "\nНайдены вложенные плейлисты:" + Style.RESET_ALL)
-
-                print_playlists_tree(playlists_struct)
-
-                # process_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
-                # --- Новый порядок: сначала собираем все задачи, потом скачиваем ---
-                tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
-                print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
-                download_tasks(tasks)
-                print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
-                return
-            # --- Спрашиваем про добавление индекса к имени файла ---
-            add_index_prefix = True
-            answer = input(Fore.CYAN + "\nДобавлять номер видео в начале имени файла? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-            if answer == "0":
-                add_index_prefix = False
-            log_debug(f"add_index_prefix = {add_index_prefix}")
-
-            print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
-            sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
-            selected_indexes = parse_selection(sel, len(entries))
-            selected_indexes = sorted(selected_indexes)  # всегда список, чтобы можно было обращаться по индексу
-            if not selected_indexes:
-                print(Fore.YELLOW + "Не выбрано ни одного видео. Завершение." + Style.RESET_ALL)
-                return
-            print(Fore.GREEN + f"Будут скачаны видео: {', '.join(str(i) for i in selected_indexes)}" + Style.RESET_ALL)
-            log_debug(f"Выбраны номера видео для скачивания: {selected_indexes}")
-
-            cmdline_auto_mode = auto_mode  # сохраняем, что было в аргументах
-            if not cmdline_auto_mode:
-                user_auto = input(Fore.CYAN + "\nВыбрать параметры вручную для каждого видео? (1 — вручную, 0 — автоматически, Enter = 0): " + Style.RESET_ALL).strip()
-                auto_mode = False if user_auto == '1' else True
-            # если был --auto, auto_mode уже True и не спрашиваем пользователя
-
-            # --- Если автоматический режим, запрашиваем параметры только для первого видео ---
-            if auto_mode:
-                first_idx = selected_indexes[0]
-                entry = entries[first_idx - 1]
-                entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
-                if not entry_url:
-                    print(Fore.RED + f"Не удалось получить ссылку для первого видео. Прерывание." + Style.RESET_ALL)
-                    log_debug(f"Нет ссылки для первого видео {first_idx}")
-                    return
-                print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста (выбор параметров) ===" + Style.RESET_ALL)
-                entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
-                cookie_file_to_use = entry_info.get('__cookiefile__')
-                chapters = entry_info.get("chapters")
-                has_chapters = isinstance(chapters, list) and len(chapters) > 0
-                # ВАЖНО: auto_mode=False для первого видео!
-                video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)                
-                USER_SELECTED_VIDEO_CODEC = video_codec
-                USER_SELECTED_AUDIO_CODEC = audio_codec
-                if video_id == "bestvideo+bestaudio/best":
-                    quality_map = {
-                        "0": ("bestvideo+bestaudio/best", "Максимальное"),
-                        "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
-                        "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
-                        "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
-                        "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
-                    }
-                    print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
-                    for key, (_, label) in quality_map.items():
-                        print(f"{key}: {label}")
-                    choice = input(Fore.CYAN + "Номер (Enter = 0): " + Style.RESET_ALL).strip() or "0"
-                    selected = quality_map.get(choice, quality_map["0"])
-                    video_id = selected[0]
-                    log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
-                subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
-                save_chapter_file = False
-                integrate_chapters = False
-                keep_chapter_file = False
-                chapter_filename = None
-                USER_INTEGRATE_CHAPTERS = integrate_chapters
-                USER_KEEP_CHAPTER_FILE = keep_chapter_file
-                USER_SELECTED_CHAPTER_FILENAME = chapter_filename
-                if has_chapters:
-                    ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                    save_chapter_file = ask_chaps != "0"
-                    log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
-                output_path = select_output_folder(auto_mode=False)
-                USER_SELECTED_OUTPUT_PATH = output_path
-                if saved_list_path and Path(saved_list_path).is_file():
-                    try:
-                        dest_path = Path(output_path) / Path(saved_list_path).name
-                        Path(saved_list_path).replace(dest_path)
-                        print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
-                    except Exception as e:
-                        print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
-                output_format = ask_output_format(
-                    desired_ext,
-                    auto_mode=False,
-                    subtitle_options=subtitle_download_options,
-                    has_chapters=has_chapters
-                )
-                USER_SELECTED_OUTPUT_FORMAT = output_format
-                integrate_subs = False
-                keep_sub_files = True
-                subs_to_integrate_langs = []
-                USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
-                USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
-                USER_INTEGRATE_SUBS = integrate_subs
-                USER_KEEP_SUB_FILES = keep_sub_files
-                if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
-                    available_langs = subtitle_download_options['subtitleslangs']
-                    print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
-                          "\n  Введите номера или коды языков (через запятую или пробел)."
-                          "\n  Enter, 0 или all — интегрировать ВСЕ."
-                          "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
-                    for sidx, lang in enumerate(available_langs, 1):
-                        print(f"{sidx}: {lang}")
-                    sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
-                    if sel in ("", "0", "all"):
-                        integrate_subs = True
-                        subs_to_integrate_langs = available_langs.copy()
-                    elif sel == "-":
-                        integrate_subs = False
-                    else:
-                        parts = [s.strip() for s in re.split(r"[\s,]+", sel) if s.strip()]
-                        for p in parts:
-                            if p.isdigit() and 1 <= int(p) <= len(available_langs):
-                                subs_to_integrate_langs.append(available_langs[int(p) - 1])
-                            elif p in available_langs:
-                                subs_to_integrate_langs.append(p)
-                        subs_to_integrate_langs = sorted(set(subs_to_integrate_langs))
-                        integrate_subs = bool(subs_to_integrate_langs)
-                    log_debug(f"Выбраны языки для интеграции: {subs_to_integrate_langs}")
-                    if integrate_subs:
-                        keep_input = input(Fore.CYAN + "Сохранять субтитры отдельными файлами? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                        keep_sub_files = (keep_input != "0")
-                        log_debug(f"keep_sub_files = {keep_sub_files}")
-                log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
-                if output_format.lower() == 'mkv' and has_chapters:
-                    chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                    integrate_chapters = chaps != "0"
-                    log_debug(f"Интеграция глав: {integrate_chapters}")
-                    if integrate_chapters:
-                        keep = input(Fore.CYAN + "Сохранять файл с главами отдельно? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
-                        keep_chapter_file = keep == "1"
-                        log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
-                default_title = entry_info.get('title', f'video_{first_idx}')
-                safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
-                if add_index_prefix:
-                    safe_title = f"{first_idx:02d} {safe_title}"
-                log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                output_name = ask_output_filename(safe_title, output_path, output_format, auto_mode=False)
-                USER_SELECTED_OUTPUT_NAME = output_name
-                log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
-                if (save_chapter_file or integrate_chapters) and has_chapters:
-                    chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
-                    save_chapters_to_file(chapters, str(chapter_filename))
-                log_debug(f"subtitle_options переданы: {subtitle_download_options}")
-                downloaded_file = download_video(
-                    entry_url, video_id, audio_id, output_path, output_name, output_format,
-                    platform, cookie_file_to_use, subtitle_options=subtitle_download_options
-                )
-                if downloaded_file:
-                    print(Fore.GREEN + f"Видео {first_idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
-                else:
-                    print(Fore.RED + f"Ошибка при скачивании видео {first_idx}." + Style.RESET_ALL)
-
-                if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                    if downloaded_file and Path(downloaded_file).is_file():
-                        mux_mkv_with_subs_and_chapters(
-                            downloaded_file, output_name, output_path,
-                            subs_to_integrate_langs, subtitle_download_options,
-                            integrate_subs, keep_sub_files,
-                            integrate_chapters, keep_chapter_file, chapter_filename
-                        )
-                    else:
-                        print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
-                        log_debug("Ошибка: итоговый файл для интеграции не найден.")
-                # --- Для остальных видео применяем те же параметры ---
-                for idx in selected_indexes[1:]:
-                    entry = entries[idx - 1]
-                    entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
-                    if not entry_url:
-                        print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
-                        log_debug(f"Нет ссылки для видео {idx}")
-                        continue
-                    print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста (автоматический режим) ===" + Style.RESET_ALL)
-                    try:
-                        entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
-                        cookie_file_to_use = entry_info.get('__cookiefile__')
-                        chapters = entry_info.get("chapters")
-                        has_chapters = isinstance(chapters, list) and len(chapters) > 0
-                        video_fmt_auto = find_by_format_id(entry_info['formats'], video_id, is_video=True)
-                        audio_fmt_auto = find_by_format_id(entry_info['formats'], audio_id, is_video=False) if audio_id else None
-
-                        if not video_fmt_auto:
-                            video_fmt_auto = find_best_video(entry_info['formats'], video_ext)
-                        if audio_id and not audio_fmt_auto:
-                            audio_fmt_auto = find_best_audio(entry_info['formats'], audio_ext)
-                            video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
-                        video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
-                        audio_id_auto = audio_fmt_auto.get('format_id') if audio_fmt_auto else None
-                        # ---
-                        default_title = entry_info.get('title', f'video_{idx}')
-                        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
-                        if add_index_prefix:
-                            safe_title = f"{idx:02d} {safe_title}"
-                        log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                        output_name = get_unique_filename(safe_title, output_path, output_format)
-                        log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
-                        if (save_chapter_file or integrate_chapters) and has_chapters:
-                            chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
-                            save_chapters_to_file(chapters, str(chapter_filename))
-                        log_debug(f"subtitle_options переданы: {subtitle_download_options}")
-                        downloaded_file = download_video(
-                            entry_url, video_id_auto, audio_id_auto, output_path, output_name, output_format,
-                            platform, cookie_file_to_use, subtitle_options=subtitle_download_options
-                        )
-                        if downloaded_file:
-                            print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
-                        else:
-                            print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
-
-                        if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                            if downloaded_file and Path(downloaded_file).is_file():
-                                mux_mkv_with_subs_and_chapters(
-                                    downloaded_file, output_name, output_path,
-                                    subs_to_integrate_langs, subtitle_download_options,
-                                    integrate_subs, keep_sub_files,
-                                    integrate_chapters, keep_chapter_file, chapter_filename
-                                )
-                            else:
-                                print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
-                                log_debug("Ошибка: итоговый файл для интеграции не найден.")
-
-                    except KeyboardInterrupt:
-                        print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
-                        log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
-                        return
-                    except DownloadError as e:
-                        if is_video_unavailable_error(e):
-                            print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
-                            log_debug(f"Видео {idx} недоступно: {e}")
-                            continue
-                        else:
-                            print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
-                            log_debug(f"Ошибка загрузки видео {idx}: {e}")
-                            continue
-                    except Exception as e:
-                        print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
-                        log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
-                print(Fore.CYAN + "\nВсе выбранные видео из плейлиста обработаны." + Style.RESET_ALL)
-                return  # После плейлиста завершаем выполнение
-            else:
-                # --- Ручной режим: для каждого видео параметры запрашиваются отдельно ---
-                for idx in selected_indexes:
-                    entry = entries[idx - 1]
-                    entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
-                    if not entry_url:
-                        print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
-                        log_debug(f"Нет ссылки для видео {idx}")
-                        continue
-                    print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста ===" + Style.RESET_ALL)
-                    try:
-                        try:
-                            entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
-                            cookie_file_to_use = entry_info.get('__cookiefile__')
-                            chapters = entry_info.get("chapters")
-                            has_chapters = isinstance(chapters, list) and len(chapters) > 0
-                        except DownloadError as e:
-                            if is_video_unavailable_error(e):
-                                print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
-                                log_debug(f"Видео {idx} недоступно: {e}")
-                                continue
-                            else:
-                                print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
-                                log_debug(f"Ошибка загрузки видео {idx}: {e}")
-                                continue
-                        except Exception as e:
-                            print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
-                            log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
-                            continue
-                        video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
-                        USER_SELECTED_VIDEO_CODEC = video_codec
-                        USER_SELECTED_AUDIO_CODEC = audio_codec
-                        if video_id == "bestvideo+bestaudio/best":
-                            quality_map = {
-                                "0": ("bestvideo+bestaudio/best", "Максимальное"),
-                                "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
-                                "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
-                                "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
-                                "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
-                            }
-                            print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
-                            for key, (_, label) in quality_map.items():
-                                print(f"{key}: {label}")
-                            choice = input(Fore.CYAN + "Номер (Enter = 0): " + Style.RESET_ALL).strip() or "0"
-                            selected = quality_map.get(choice, quality_map["0"])
-                            video_id = selected[0]
-                            log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
-                        subtitle_download_options = ask_and_select_subtitles(entry_info)
-                        save_chapter_file = False
-                        integrate_chapters = False
-                        keep_chapter_file = False
-                        chapter_filename = None
-                        USER_INTEGRATE_CHAPTERS = integrate_chapters
-                        USER_KEEP_CHAPTER_FILE = keep_chapter_file
-                        USER_SELECTED_CHAPTER_FILENAME = chapter_filename
-                        if has_chapters:
-                            ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                            save_chapter_file = ask_chaps != "0"
-                            log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
-                        output_path = select_output_folder()
-                        USER_SELECTED_OUTPUT_PATH = output_path
-                        if saved_list_path and Path(saved_list_path).is_file():
-                            try:
-                                dest_path = Path(output_path) / Path(saved_list_path).name
-                                Path(saved_list_path).replace(dest_path)
-                                print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
-                            except Exception as e:
-                                print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
-                        output_format = ask_output_format(
-                            desired_ext,
-                            auto_mode=False,
-                            subtitle_options=subtitle_download_options,
-                            has_chapters=has_chapters
-                        )
-                        USER_SELECTED_OUTPUT_FORMAT = output_format
-                        integrate_subs = False
-                        keep_sub_files = True
-                        subs_to_integrate_langs = []
-                        USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
-                        USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
-                        USER_INTEGRATE_SUBS = integrate_subs
-                        USER_KEEP_SUB_FILES = keep_sub_files
-                        if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
-                            available_langs = subtitle_download_options['subtitleslangs']
-                            print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
-                                "\n  Введите номера или коды языков (через запятую или пробел)."
-                                "\n  Enter, 0 или all — интегрировать ВСЕ."
-                                "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
-                            for sidx, lang in enumerate(available_langs, 1):
-                                print(f"{sidx}: {lang}")
-                            sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
-                            if sel in ("", "0", "all"):
-                                subs_to_integrate_langs = available_langs.copy()
-                                integrate_subs = True
-                            elif sel == "-":
-                                integrate_subs = False
-                            else:
-                                parts = [s.strip() for s in re.split(r"[\s,]+", sel) if s.strip()]
-                                for p in parts:
-                                    if p.isdigit() and 1 <= int(p) <= len(available_langs):
-                                        subs_to_integrate_langs.append(available_langs[int(p) - 1])
-                                    elif p in available_langs:
-                                        subs_to_integrate_langs.append(p)
-                                subs_to_integrate_langs = sorted(set(subs_to_integrate_langs))
-                                integrate_subs = bool(subs_to_integrate_langs)
-                            log_debug(f"Выбраны языки для интеграции: {subs_to_integrate_langs}")
-                            if integrate_subs:
-                                keep_input = input(Fore.CYAN + "Сохранять субтитры отдельными файлами? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                                keep_sub_files = (keep_input != "0")
-                                log_debug(f"keep_sub_files = {keep_sub_files}")
-                        log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
-                        if output_format.lower() == 'mkv' and has_chapters:
-                            chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                            integrate_chapters = chaps != "0"
-                            log_debug(f"Интеграция глав: {integrate_chapters}")
-                            if integrate_chapters:
-                                keep = input(Fore.CYAN + "Сохранять файл с главами отдельно? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
-                                keep_chapter_file = keep == "1"
-                                log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
-                        default_title = entry_info.get('title', f'video_{idx}')
-                        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
-                        if add_index_prefix:
-                            safe_title = f"{idx:02d} {safe_title}"
-                        log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-                        # --- Автоматический подбор имени файла, если файл уже существует ---
-                        output_name = get_unique_filename(safe_title, output_path, output_format)
-                        log_debug(f"Финальное имя файла (автоматически): '{output_name}'")
-                        if (save_chapter_file or integrate_chapters) and has_chapters:
-                            chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
-                            save_chapters_to_file(chapters, str(chapter_filename))
-                        log_debug(f"subtitle_options переданы: {subtitle_download_options}")
-                        downloaded_file = download_video(
-                            entry_url, video_id, audio_id, output_path, output_name, output_format,
-                            platform, cookie_file_to_use, subtitle_options=subtitle_download_options
-                        )
-                        if downloaded_file:
-                            print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
-                        else:
-                            print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
-
-                        if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
-                            if downloaded_file and Path(downloaded_file).is_file():
-                                mux_mkv_with_subs_and_chapters(
-                                    downloaded_file, output_name, output_path,
-                                    subs_to_integrate_langs, subtitle_download_options,
-                                    integrate_subs, keep_sub_files,
-                                    integrate_chapters, keep_chapter_file, chapter_filename
-                                )
-                            else:
-                                print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
-                                log_debug("Ошибка: итоговый файл для интеграции не найден.")
-
-                    except KeyboardInterrupt:
-                        print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
-                        log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
-                    
-                        return
-                    except DownloadError as e:
-                        print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
-                    except Exception as e:
-                        print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
-                        log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
-                print(Fore.CYAN + "\nВсе выбранные видео из плейлиста обработаны." + Style.RESET_ALL)
-                return  # После плейлиста завершаем выполнение
-        # --- Одиночное видео ---
+            playlist_title = info.get('title') or "playlist"
+            saved_list_path = print_playlist_paginated(all_videos, page_size=PAGE_SIZE, timeout=PAGE_TIMEOUT, playlist_title=playlist_title)
         else:
-            print(Fore.YELLOW + "\nОбнаружено одиночное видео." + Style.RESET_ALL)
-            log_debug("Обнаружено одиночное видео.")
-            chapters = info.get("chapters")
-            has_chapters = isinstance(chapters, list) and len(chapters) > 0
-            try:
-                video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
-            except DownloadError as e:
-                if is_video_unavailable_error(e):
-                    print(Fore.YELLOW + "Видео недоступно (премьера/скрыто/удалено). Завершение." + Style.RESET_ALL)
-                    log_debug(f"Одиночное видео недоступно: {e}")
-                    return
-                else:
-                    print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
-                    log_debug(f"Ошибка загрузки видео: {e}")
-                    return
-            except Exception as e:
-                print(Fore.RED + f"Непредвидённая ошибка при скачивании видео: {e}" + Style.RESET_ALL)
-                log_debug(f"Ошибка при скачивании видео: {e}\n{traceback.format_exc()}")
+            # Есть вложенные плейлисты
+            log_debug("main: Ветка — есть вложенные плейлисты")
+            log_debug(f"main: playlists_struct (подробно): {str(playlists_struct)[:1000]}")
+            print(Fore.YELLOW + "\nОбнаружены вложенные плейлисты! Будет произведён обход по каждому из них." + Style.RESET_ALL)
+            output_path = select_output_folder(auto_mode=False)
+            USER_SELECTED_OUTPUT_PATH = output_path
+
+            # Выводим список всех плейлистов с количеством видео
+            print(Fore.YELLOW + "\nНайдены вложенные плейлисты:" + Style.RESET_ALL)
+
+            print_playlists_tree(playlists_struct)
+
+            # process_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
+            # --- Новый порядок: сначала собираем все задачи, потом скачиваем ---
+            tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
+            print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
+            download_tasks(tasks)
+            print(Fore.CYAN + "\nВсе выбранные видео из всех плейлистов обработаны." + Style.RESET_ALL)
+            return
+        # --- Спрашиваем про добавление индекса к имени файла ---
+        add_index_prefix = True
+        answer = input(Fore.CYAN + "\nДобавлять номер видео в начале имени файла? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+        if answer == "0":
+            add_index_prefix = False
+        log_debug(f"add_index_prefix = {add_index_prefix}")
+
+        print(Fore.CYAN + "\nВведите номера видео для скачивания (через запятую, пробелы, диапазоны через тире).\nEnter или 0 — скачать все:" + Style.RESET_ALL)
+        sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL)
+        selected_indexes = parse_selection(sel, len(entries))
+        selected_indexes = sorted(selected_indexes)  # всегда список, чтобы можно было обращаться по индексу
+        if not selected_indexes:
+            print(Fore.YELLOW + "Не выбрано ни одного видео. Завершение." + Style.RESET_ALL)
+            return
+        print(Fore.GREEN + f"Будут скачаны видео: {', '.join(str(i) for i in selected_indexes)}" + Style.RESET_ALL)
+        log_debug(f"Выбраны номера видео для скачивания: {selected_indexes}")
+
+        cmdline_auto_mode = auto_mode  # сохраняем, что было в аргументах
+        if not cmdline_auto_mode:
+            user_auto = input(Fore.CYAN + "\nВыбрать параметры вручную для каждого видео? (1 — вручную, 0 — автоматически, Enter = 0): " + Style.RESET_ALL).strip()
+            auto_mode = False if user_auto == '1' else True
+        # если был --auto, auto_mode уже True и не спрашиваем пользователя
+
+        # --- Если автоматический режим, запрашиваем параметры только для первого видео ---
+        if auto_mode:
+            first_idx = selected_indexes[0]
+            entry = entries[first_idx - 1]
+            entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+            if not entry_url:
+                print(Fore.RED + f"Не удалось получить ссылку для первого видео. Прерывание." + Style.RESET_ALL)
+                log_debug(f"Нет ссылки для первого видео {first_idx}")
                 return
+            print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста (выбор параметров) ===" + Style.RESET_ALL)
+            entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
+            cookie_file_to_use = entry_info.get('__cookiefile__')
+            chapters = entry_info.get("chapters")
+            has_chapters = isinstance(chapters, list) and len(chapters) > 0
+            # ВАЖНО: auto_mode=False для первого видео!
+            video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'], auto_mode=False, bestvideo=args.bestvideo, bestaudio=args.bestaudio)                
             USER_SELECTED_VIDEO_CODEC = video_codec
             USER_SELECTED_AUDIO_CODEC = audio_codec
             if video_id == "bestvideo+bestaudio/best":
@@ -3489,7 +3108,7 @@ def main():
                 selected = quality_map.get(choice, quality_map["0"])
                 video_id = selected[0]
                 log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
-            subtitle_download_options = ask_and_select_subtitles(info)
+            subtitle_download_options = ask_and_select_subtitles(entry_info, auto_mode=False)
             save_chapter_file = False
             integrate_chapters = False
             keep_chapter_file = False
@@ -3501,7 +3120,7 @@ def main():
                 ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
                 save_chapter_file = ask_chaps != "0"
                 log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
-            output_path = select_output_folder()
+            output_path = select_output_folder(auto_mode=False)
             USER_SELECTED_OUTPUT_PATH = output_path
             if saved_list_path and Path(saved_list_path).is_file():
                 try:
@@ -3512,6 +3131,7 @@ def main():
                     print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
             output_format = ask_output_format(
                 desired_ext,
+                auto_mode=False,
                 subtitle_options=subtitle_download_options,
                 has_chapters=has_chapters
             )
@@ -3526,53 +3146,60 @@ def main():
             if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
                 available_langs = subtitle_download_options['subtitleslangs']
                 print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
-                      "\n  Введите номера или коды языков (через запятую или пробел)."
-                      "\n  Enter, 0 или all — интегрировать ВСЕ."
-                      "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
+                        "\n  Введите номера или коды языков (через запятую или пробел)."
+                        "\n  Enter, 0 или all — интегрировать ВСЕ."
+                        "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
                 for sidx, lang in enumerate(available_langs, 1):
                     print(f"{sidx}: {lang}")
                 sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
                 if sel in ("", "0", "all"):
                     integrate_subs = True
-                    subs_to_integrate_langs = available_langs
+                    subs_to_integrate_langs = available_langs.copy()
                 elif sel == "-":
                     integrate_subs = False
                 else:
-                    parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+                    parts = [s.strip() for s in re.split(r"[\s,]+", sel) if s.strip()]
                     for p in parts:
-                        if p.isdigit():
-                            i = int(p) - 1
-                            if 0 <= i < len(available_langs):
-                                subs_to_integrate_langs.append(available_langs[i])
+                        if p.isdigit() and 1 <= int(p) <= len(available_langs):
+                            subs_to_integrate_langs.append(available_langs[int(p) - 1])
                         elif p in available_langs:
                             subs_to_integrate_langs.append(p)
+                    subs_to_integrate_langs = sorted(set(subs_to_integrate_langs))
                     integrate_subs = bool(subs_to_integrate_langs)
+                log_debug(f"Выбраны языки для интеграции: {subs_to_integrate_langs}")
+                if integrate_subs:
+                    keep_input = input(Fore.CYAN + "Сохранять субтитры отдельными файлами? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                    keep_sub_files = (keep_input != "0")
+                    log_debug(f"keep_sub_files = {keep_sub_files}")
             log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
             if output_format.lower() == 'mkv' and has_chapters:
-                ask_chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
-                integrate_chapters = ask_chaps != "0"
-                log_debug(f"Пользователь выбрал интеграцию глав: {integrate_chapters}")
-            default_title = info.get('title', 'video')
+                chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                integrate_chapters = chaps != "0"
+                log_debug(f"Интеграция глав: {integrate_chapters}")
+                if integrate_chapters:
+                    keep = input(Fore.CYAN + "Сохранять файл с главами отдельно? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                    keep_chapter_file = keep == "1"
+                    log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
+            default_title = entry_info.get('title', f'video_{first_idx}')
             safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+            if add_index_prefix:
+                safe_title = f"{first_idx:02d} {safe_title}"
             log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
-            output_name = ask_output_filename(safe_title, output_path, output_format)
-            USER_SELECTED_OUTPUT_NAME = output_name            
+            output_name = ask_output_filename(safe_title, output_path, output_format, auto_mode=False)
+            USER_SELECTED_OUTPUT_NAME = output_name
             log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
             if (save_chapter_file or integrate_chapters) and has_chapters:
                 chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
                 save_chapters_to_file(chapters, str(chapter_filename))
-            # Запуск загрузки видео
+            log_debug(f"subtitle_options переданы: {subtitle_download_options}")
             downloaded_file = download_video(
-                url, video_id, audio_id,
-                output_path, output_name,
-                output_format, platform,
-                cookie_file_to_use,
-                subtitle_download_options
+                entry_url, video_id, audio_id, output_path, output_name, output_format,
+                platform, cookie_file_to_use, subtitle_options=subtitle_download_options
             )
             if downloaded_file:
-                print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+                print(Fore.GREEN + f"Видео {first_idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
             else:
-                print(Fore.RED + "\nОшибка при скачивании видео." + Style.RESET_ALL)
+                print(Fore.RED + f"Ошибка при скачивании видео {first_idx}." + Style.RESET_ALL)
 
             if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
                 if downloaded_file and Path(downloaded_file).is_file():
@@ -3585,78 +3212,435 @@ def main():
                 else:
                     print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
                     log_debug("Ошибка: итоговый файл для интеграции не найден.")
+            # --- Для остальных видео применяем те же параметры ---
+            for idx in selected_indexes[1:]:
+                entry = entries[idx - 1]
+                entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                if not entry_url:
+                    print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
+                    log_debug(f"Нет ссылки для видео {idx}")
+                    continue
+                print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста (автоматический режим) ===" + Style.RESET_ALL)
+                try:
+                    entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
+                    cookie_file_to_use = entry_info.get('__cookiefile__')
+                    chapters = entry_info.get("chapters")
+                    has_chapters = isinstance(chapters, list) and len(chapters) > 0
+                    video_fmt_auto = find_by_format_id(entry_info['formats'], video_id, is_video=True)
+                    audio_fmt_auto = find_by_format_id(entry_info['formats'], audio_id, is_video=False) if audio_id else None
 
-        # --- Блок финальной проверки итогового файла ---
-        final_file = None
-        if 'downloaded_file' in locals() and downloaded_file and Path(downloaded_file).is_file():
-            final_file = downloaded_file
-        # Для плейлистов можно добавить аналогично, если нужно
-
-        if final_file and output_format.lower() == 'mkv':
-            log_debug(f"Финальная проверка MKV-файла: {final_file}")
-            # Собираем ожидаемые параметры
-            expected_video_codec = video_codec if 'video_codec' in locals() else None
-            expected_audio_codec = audio_codec if 'audio_codec' in locals() else None
-            expected_sub_langs = subs_to_integrate_langs if integrate_subs else []
-            expected_chapters = integrate_chapters
-
-            ok = check_mkv_integrity(
-                final_file,
-                expected_video_codec=USER_SELECTED_VIDEO_CODEC,
-                expected_audio_codec=USER_SELECTED_AUDIO_CODEC,
-                expected_sub_langs=USER_SELECTED_SUB_LANGS if USER_INTEGRATE_SUBS else [],
-                expected_chapters=USER_INTEGRATE_CHAPTERS
-            )
-            if not ok:
-                log_debug("Файл MKV не соответствует выбранным опциям — запускаем принудительную интеграцию.")
-                print(Fore.YELLOW + "Файл MKV не содержит все выбранные дорожки. Запускается повторная интеграция..." + Style.RESET_ALL)
-                if downloaded_file and Path(downloaded_file).is_file():
-                    mux_mkv_with_subs_and_chapters(
-                        downloaded_file, output_name, output_path,
-                        subs_to_integrate_langs, subtitle_download_options,
-                        integrate_subs, keep_sub_files,
-                        integrate_chapters, keep_chapter_file, chapter_filename
+                    if not video_fmt_auto:
+                        video_fmt_auto = find_best_video(entry_info['formats'], video_ext)
+                    if audio_id and not audio_fmt_auto:
+                        audio_fmt_auto = find_best_audio(entry_info['formats'], audio_ext)
+                        video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
+                    video_id_auto = video_fmt_auto.get('format_id') if video_fmt_auto else None
+                    audio_id_auto = audio_fmt_auto.get('format_id') if audio_fmt_auto else None
+                    # ---
+                    default_title = entry_info.get('title', f'video_{idx}')
+                    safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                    if add_index_prefix:
+                        safe_title = f"{idx:02d} {safe_title}"
+                    log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
+                    output_name = get_unique_filename(safe_title, output_path, output_format)
+                    log_debug(f"Финальное имя файла (автоматически): '{output_name}' (автоматический режим)")
+                    if (save_chapter_file or integrate_chapters) and has_chapters:
+                        chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+                        save_chapters_to_file(chapters, str(chapter_filename))
+                    log_debug(f"subtitle_options переданы: {subtitle_download_options}")
+                    downloaded_file = download_video(
+                        entry_url, video_id_auto, audio_id_auto, output_path, output_name, output_format,
+                        platform, cookie_file_to_use, subtitle_options=subtitle_download_options
                     )
-                else:
-                    print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
-                    log_debug("Ошибка: итоговый файл для интеграции не найден.")
-            else:
-                log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.") 
-    # --- Переименование автоматических субтитров с .auto ---
-    try:
-        # subtitle_download_options может быть None
-        if 'subtitle_download_options' in locals() and subtitle_download_options:
-            auto_suffix = subtitle_download_options.get('add_auto_suffix', True)
-            auto_langs = subtitle_download_options.get('automatic_subtitles_langs', [])
-            sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
-            output_name = USER_SELECTED_OUTPUT_NAME if 'USER_SELECTED_OUTPUT_NAME' in locals() else None
-            output_path = USER_SELECTED_OUTPUT_PATH if 'USER_SELECTED_OUTPUT_PATH' in locals() else None
-            if auto_suffix and output_name and output_path:
-                for lang in auto_langs:
-                    orig_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
-                    new_file = Path(output_path) / f"{output_name}.{lang}.auto.{sub_format}"
-                    if orig_file.exists():
-                        try:
-                            orig_file.rename(new_file)
-                            print(Fore.YELLOW + f"Файл автоматических субтитров переименован: {new_file.name}" + Style.RESET_ALL)
-                            log_debug(f"Переименован файл автоматических субтитров: {orig_file} -> {new_file}")
-                        except Exception as e:
-                            print(Fore.RED + f"Ошибка при переименовании субтитров: {e}" + Style.RESET_ALL)
-                            log_debug(f"Ошибка при переименовании субтитров: {e}")
-    except Exception as e:
-        log_debug(f"Ошибка при финальном переименовании автоматических субтитров: {e}")
-    except KeyboardInterrupt:
-        print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
-        log_debug("Загрузка прервана пользователем (KeyboardInterrupt).")
-    except DownloadError as e:
-        print(f"\n{Fore.RED}Ошибка загрузки: {e}{Style.RESET_ALL}")
-        log_debug(f"Ошибка загрузки (DownloadError): {str(e)}")
+                    if downloaded_file:
+                        print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+                    else:
+                        print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
 
-    except Exception as e:
-        print(f"\n{Fore.RED}Произошла непредвиденная ошибка: {e}{Style.RESET_ALL}")
-        log_debug(f"Произошла непредвиденная ошибка: {e}\n{traceback.format_exc()}")
-    finally:
-        log_debug("Завершение работы скрипта.")
+                    if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+                        if downloaded_file and Path(downloaded_file).is_file():
+                            mux_mkv_with_subs_and_chapters(
+                                downloaded_file, output_name, output_path,
+                                subs_to_integrate_langs, subtitle_download_options,
+                                integrate_subs, keep_sub_files,
+                                integrate_chapters, keep_chapter_file, chapter_filename
+                            )
+                        else:
+                            print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                            log_debug("Ошибка: итоговый файл для интеграции не найден.")
+
+                except KeyboardInterrupt:
+                    print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
+                    log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
+                    return
+                except DownloadError as e:
+                    if is_video_unavailable_error(e):
+                        print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                        log_debug(f"Видео {idx} недоступно: {e}")
+                        continue
+                    else:
+                        print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                        log_debug(f"Ошибка загрузки видео {idx}: {e}")
+                        continue
+                except Exception as e:
+                    print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+                    log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
+            print(Fore.CYAN + "\nВсе выбранные видео из плейлиста обработаны." + Style.RESET_ALL)
+            return  # После плейлиста завершаем выполнение
+        else:
+            # --- Ручной режим: для каждого видео параметры запрашиваются отдельно ---
+            for idx in selected_indexes:
+                entry = entries[idx - 1]
+                entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                if not entry_url:
+                    print(Fore.RED + f"Не удалось получить ссылку для видео {idx}. Пропуск." + Style.RESET_ALL)
+                    log_debug(f"Нет ссылки для видео {idx}")
+                    continue
+                print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста ===" + Style.RESET_ALL)
+                try:
+                    try:
+                        entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
+                        cookie_file_to_use = entry_info.get('__cookiefile__')
+                        chapters = entry_info.get("chapters")
+                        has_chapters = isinstance(chapters, list) and len(chapters) > 0
+                    except DownloadError as e:
+                        if is_video_unavailable_error(e):
+                            print(Fore.YELLOW + f"Видео {idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
+                            log_debug(f"Видео {idx} недоступно: {e}")
+                            continue
+                        else:
+                            print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                            log_debug(f"Ошибка загрузки видео {idx}: {e}")
+                            continue
+                    except Exception as e:
+                        print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+                        log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
+                        continue
+                    video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
+                    USER_SELECTED_VIDEO_CODEC = video_codec
+                    USER_SELECTED_AUDIO_CODEC = audio_codec
+                    if video_id == "bestvideo+bestaudio/best":
+                        quality_map = {
+                            "0": ("bestvideo+bestaudio/best", "Максимальное"),
+                            "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                            "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                            "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                            "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+                        }
+                        print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
+                        for key, (_, label) in quality_map.items():
+                            print(f"{key}: {label}")
+                        choice = input(Fore.CYAN + "Номер (Enter = 0): " + Style.RESET_ALL).strip() or "0"
+                        selected = quality_map.get(choice, quality_map["0"])
+                        video_id = selected[0]
+                        log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
+                    subtitle_download_options = ask_and_select_subtitles(entry_info)
+                    save_chapter_file = False
+                    integrate_chapters = False
+                    keep_chapter_file = False
+                    chapter_filename = None
+                    USER_INTEGRATE_CHAPTERS = integrate_chapters
+                    USER_KEEP_CHAPTER_FILE = keep_chapter_file
+                    USER_SELECTED_CHAPTER_FILENAME = chapter_filename
+                    if has_chapters:
+                        ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                        save_chapter_file = ask_chaps != "0"
+                        log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
+                    output_path = select_output_folder()
+                    USER_SELECTED_OUTPUT_PATH = output_path
+                    if saved_list_path and Path(saved_list_path).is_file():
+                        try:
+                            dest_path = Path(output_path) / Path(saved_list_path).name
+                            Path(saved_list_path).replace(dest_path)
+                            print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
+                        except Exception as e:
+                            print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
+                    output_format = ask_output_format(
+                        desired_ext,
+                        auto_mode=False,
+                        subtitle_options=subtitle_download_options,
+                        has_chapters=has_chapters
+                    )
+                    USER_SELECTED_OUTPUT_FORMAT = output_format
+                    integrate_subs = False
+                    keep_sub_files = True
+                    subs_to_integrate_langs = []
+                    USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
+                    USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
+                    USER_INTEGRATE_SUBS = integrate_subs
+                    USER_KEEP_SUB_FILES = keep_sub_files
+                    if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
+                        available_langs = subtitle_download_options['subtitleslangs']
+                        print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
+                            "\n  Введите номера или коды языков (через запятую или пробел)."
+                            "\n  Enter, 0 или all — интегрировать ВСЕ."
+                            "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
+                        for sidx, lang in enumerate(available_langs, 1):
+                            print(f"{sidx}: {lang}")
+                        sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
+                        if sel in ("", "0", "all"):
+                            subs_to_integrate_langs = available_langs.copy()
+                            integrate_subs = True
+                        elif sel == "-":
+                            integrate_subs = False
+                        else:
+                            parts = [s.strip() for s in re.split(r"[\s,]+", sel) if s.strip()]
+                            for p in parts:
+                                if p.isdigit() and 1 <= int(p) <= len(available_langs):
+                                    subs_to_integrate_langs.append(available_langs[int(p) - 1])
+                                elif p in available_langs:
+                                    subs_to_integrate_langs.append(p)
+                            subs_to_integrate_langs = sorted(set(subs_to_integrate_langs))
+                            integrate_subs = bool(subs_to_integrate_langs)
+                        log_debug(f"Выбраны языки для интеграции: {subs_to_integrate_langs}")
+                        if integrate_subs:
+                            keep_input = input(Fore.CYAN + "Сохранять субтитры отдельными файлами? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                            keep_sub_files = (keep_input != "0")
+                            log_debug(f"keep_sub_files = {keep_sub_files}")
+                    log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
+                    if output_format.lower() == 'mkv' and has_chapters:
+                        chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+                        integrate_chapters = chaps != "0"
+                        log_debug(f"Интеграция глав: {integrate_chapters}")
+                        if integrate_chapters:
+                            keep = input(Fore.CYAN + "Сохранять файл с главами отдельно? (1 — да, 0 — нет, Enter = 0): " + Style.RESET_ALL).strip()
+                            keep_chapter_file = keep == "1"
+                            log_debug(f"Сохраняем ли файл глав отдельно: {keep_chapter_file}")
+                    default_title = entry_info.get('title', f'video_{idx}')
+                    safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+                    if add_index_prefix:
+                        safe_title = f"{idx:02d} {safe_title}"
+                    log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
+                    # --- Автоматический подбор имени файла, если файл уже существует ---
+                    output_name = get_unique_filename(safe_title, output_path, output_format)
+                    log_debug(f"Финальное имя файла (автоматически): '{output_name}'")
+                    if (save_chapter_file or integrate_chapters) and has_chapters:
+                        chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+                        save_chapters_to_file(chapters, str(chapter_filename))
+                    log_debug(f"subtitle_options переданы: {subtitle_download_options}")
+                    downloaded_file = download_video(
+                        entry_url, video_id, audio_id, output_path, output_name, output_format,
+                        platform, cookie_file_to_use, subtitle_options=subtitle_download_options
+                    )
+                    if downloaded_file:
+                        print(Fore.GREEN + f"Видео {idx} успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+                    else:
+                        print(Fore.RED + f"Ошибка при скачивании видео {idx}." + Style.RESET_ALL)
+
+                    if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+                        if downloaded_file and Path(downloaded_file).is_file():
+                            mux_mkv_with_subs_and_chapters(
+                                downloaded_file, output_name, output_path,
+                                subs_to_integrate_langs, subtitle_download_options,
+                                integrate_subs, keep_sub_files,
+                                integrate_chapters, keep_chapter_file, chapter_filename
+                            )
+                        else:
+                            print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                            log_debug("Ошибка: итоговый файл для интеграции не найден.")
+
+                except KeyboardInterrupt:
+                    print(Fore.YELLOW + "\nЗагрузка прервана пользователем." + Style.RESET_ALL)
+                    log_debug("Загрузка прервана пользователем (KeyboardInterrupt) в плейлисте.")
+                
+                    return
+                except DownloadError as e:
+                    print(f"\n{Fore.RED}Ошибка загрузки видео {idx}: {e}{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"\n{Fore.RED}Непредвидённая ошибка при скачивании видео {idx}: {e}{Style.RESET_ALL}")
+                    log_debug(f"Ошибка при скачивании видео {idx}: {e}\n{traceback.format_exc()}")
+            print(Fore.CYAN + "\nВсе выбранные видео из плейлиста обработаны." + Style.RESET_ALL)
+            return  # После плейлиста завершаем выполнение
+    # --- Одиночное видео ---
+    else:
+        print(Fore.YELLOW + "\nОбнаружено одиночное видео." + Style.RESET_ALL)
+        log_debug("Обнаружено одиночное видео.")
+        chapters = info.get("chapters")
+        has_chapters = isinstance(chapters, list) and len(chapters) > 0
+        try:
+            video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
+        except DownloadError as e:
+            if is_video_unavailable_error(e):
+                print(Fore.YELLOW + "Видео недоступно (премьера/скрыто/удалено). Завершение." + Style.RESET_ALL)
+                log_debug(f"Одиночное видео недоступно: {e}")
+                return
+            else:
+                print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
+                log_debug(f"Ошибка загрузки видео: {e}")
+                return
+        except Exception as e:
+            print(Fore.RED + f"Непредвидённая ошибка при скачивании видео: {e}" + Style.RESET_ALL)
+            log_debug(f"Ошибка при скачивании видео: {e}\n{traceback.format_exc()}")
+            return
+        USER_SELECTED_VIDEO_CODEC = video_codec
+        USER_SELECTED_AUDIO_CODEC = audio_codec
+        if video_id == "bestvideo+bestaudio/best":
+            quality_map = {
+                "0": ("bestvideo+bestaudio/best", "Максимальное"),
+                "1": ("bestvideo[height<=1080]+bestaudio/best", "≤ 1080p"),
+                "2": ("bestvideo[height<=720]+bestaudio/best",  "≤ 720p"),
+                "3": ("bestvideo[height<=480]+bestaudio/best",  "≤ 480p"),
+                "4": ("bestvideo[height<=360]+bestaudio/best",  "≤ 360p"),
+            }
+            print(Fore.CYAN + "\nВыберите желаемое качество DASH/HLS:" + Style.RESET_ALL)
+            for key, (_, label) in quality_map.items():
+                print(f"{key}: {label}")
+            choice = input(Fore.CYAN + "Номер (Enter = 0): " + Style.RESET_ALL).strip() or "0"
+            selected = quality_map.get(choice, quality_map["0"])
+            video_id = selected[0]
+            log_debug(f"Пользователь выбрал профиль DASH: {video_id}")
+        subtitle_download_options = ask_and_select_subtitles(info)
+        save_chapter_file = False
+        integrate_chapters = False
+        keep_chapter_file = False
+        chapter_filename = None
+        USER_INTEGRATE_CHAPTERS = integrate_chapters
+        USER_KEEP_CHAPTER_FILE = keep_chapter_file
+        USER_SELECTED_CHAPTER_FILENAME = chapter_filename
+        if has_chapters:
+            ask_chaps = input(Fore.CYAN + "Видео содержит главы. Сохранить главы в файл? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            save_chapter_file = ask_chaps != "0"
+            log_debug(f"Пользователь выбрал сохранить главы: {save_chapter_file}")
+        output_path = select_output_folder()
+        USER_SELECTED_OUTPUT_PATH = output_path
+        if saved_list_path and Path(saved_list_path).is_file():
+            try:
+                dest_path = Path(output_path) / Path(saved_list_path).name
+                Path(saved_list_path).replace(dest_path)
+                print(Fore.GREEN + f"Список видео перемещён в папку сохранения: {dest_path}" + Style.RESET_ALL)
+            except Exception as e:
+                print(Fore.RED + f"Не удалось переместить файл списка: {e}" + Style.RESET_ALL)
+        output_format = ask_output_format(
+            desired_ext,
+            subtitle_options=subtitle_download_options,
+            has_chapters=has_chapters
+        )
+        USER_SELECTED_OUTPUT_FORMAT = output_format
+        integrate_subs = False
+        keep_sub_files = True
+        subs_to_integrate_langs = []
+        USER_SELECTED_SUB_LANGS = subs_to_integrate_langs.copy()
+        USER_SELECTED_SUB_FORMAT = subtitle_download_options.get('subtitlesformat') if subtitle_download_options else None
+        USER_INTEGRATE_SUBS = integrate_subs
+        USER_KEEP_SUB_FILES = keep_sub_files
+        if output_format.lower() == 'mkv' and subtitle_download_options and subtitle_download_options.get('subtitleslangs'):
+            available_langs = subtitle_download_options['subtitleslangs']
+            print(Fore.CYAN + "\nКакие субтитры интегрировать в итоговый MKV?"
+                    "\n  Введите номера или коды языков (через запятую или пробел)."
+                    "\n  Enter, 0 или all — интегрировать ВСЕ."
+                    "\n  «-» (минус) — не интегрировать ничего." + Style.RESET_ALL)
+            for sidx, lang in enumerate(available_langs, 1):
+                print(f"{sidx}: {lang}")
+            sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
+            if sel in ("", "0", "all"):
+                integrate_subs = True
+                subs_to_integrate_langs = available_langs
+            elif sel == "-":
+                integrate_subs = False
+            else:
+                parts = [s.strip() for s in re.split(r'[,\s]+', sel) if s.strip()]
+                for p in parts:
+                    if p.isdigit():
+                        i = int(p) - 1
+                        if 0 <= i < len(available_langs):
+                            subs_to_integrate_langs.append(available_langs[i])
+                    elif p in available_langs:
+                        subs_to_integrate_langs.append(p)
+                integrate_subs = bool(subs_to_integrate_langs)
+        log_debug(f"Интеграция субтитров: {integrate_subs}, языки: {subs_to_integrate_langs}, keep files: {keep_sub_files}")
+        if output_format.lower() == 'mkv' and has_chapters:
+            ask_chaps = input(Fore.CYAN + "Интегрировать главы в MKV? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            integrate_chapters = ask_chaps != "0"
+            log_debug(f"Пользователь выбрал интеграцию глав: {integrate_chapters}")
+        default_title = info.get('title', 'video')
+        safe_title = re.sub(r'[<>:"/\\|?*!]', '', default_title)
+        log_debug(f"Оригинальное название видео: '{default_title}', Безопасное название: '{safe_title}'")
+        output_name = ask_output_filename(safe_title, output_path, output_format)
+        USER_SELECTED_OUTPUT_NAME = output_name            
+        log_debug(f"Финальное имя файла, выбранное пользователем: '{output_name}'")
+        if (save_chapter_file or integrate_chapters) and has_chapters:
+            chapter_filename = Path(output_path) / f"{output_name}.ffmeta"
+            save_chapters_to_file(chapters, str(chapter_filename))
+        # Запуск загрузки видео
+        downloaded_file = download_video(
+            url, video_id, audio_id,
+            output_path, output_name,
+            output_format, platform,
+            cookie_file_to_use,
+            subtitle_download_options
+        )
+        if downloaded_file:
+            print(Fore.GREEN + f"\nВидео успешно скачано: {downloaded_file}" + Style.RESET_ALL)
+            # --- Переименование автоматических субтитров с .auto ---
+            if subtitle_download_options:
+                auto_suffix = subtitle_download_options.get('add_auto_suffix', True)
+                auto_langs = subtitle_download_options.get('automatic_subtitles_langs', [])
+                sub_format = subtitle_download_options.get('subtitlesformat', 'srt')
+                output_name = USER_SELECTED_OUTPUT_NAME
+                output_path = USER_SELECTED_OUTPUT_PATH
+                if auto_suffix and output_name and output_path:
+                    for lang in auto_langs:
+                        orig_file = Path(output_path) / f"{output_name}.{lang}.{sub_format}"
+                        new_file = Path(output_path) / f"{output_name}.{lang}.auto.{sub_format}"
+                        if orig_file.exists():
+                            try:
+                                orig_file.rename(new_file)
+                                print(Fore.YELLOW + f"Файл автоматических субтитров переименован: {new_file.name}" + Style.RESET_ALL)
+                                log_debug(f"Переименован файл автоматических субтитров: {orig_file} -> {new_file}")
+                            except Exception as e:
+                                print(Fore.RED + f"Ошибка при переименовании субтитров: {e}" + Style.RESET_ALL)
+                                log_debug(f"Ошибка при переименовании субтитров: {e}")
+        else:
+            print(Fore.RED + "\nОшибка при скачивании видео." + Style.RESET_ALL)
+
+        if output_format.lower() == 'mkv' and (integrate_subs or integrate_chapters):
+            if downloaded_file and Path(downloaded_file).is_file():
+                mux_mkv_with_subs_and_chapters(
+                    downloaded_file, output_name, output_path,
+                    subs_to_integrate_langs, subtitle_download_options,
+                    integrate_subs, keep_sub_files,
+                    integrate_chapters, keep_chapter_file, chapter_filename
+                )
+            else:
+                print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                log_debug("Ошибка: итоговый файл для интеграции не найден.")
+
+    # --- Блок финальной проверки итогового файла ---
+    final_file = None
+    if 'downloaded_file' in locals() and downloaded_file and Path(downloaded_file).is_file():
+        final_file = downloaded_file
+    # Для плейлистов можно добавить аналогично, если нужно
+
+    if final_file and output_format.lower() == 'mkv':
+        log_debug(f"Финальная проверка MKV-файла: {final_file}")
+        # Собираем ожидаемые параметры
+        expected_video_codec = video_codec if 'video_codec' in locals() else None
+        expected_audio_codec = audio_codec if 'audio_codec' in locals() else None
+        expected_sub_langs = subs_to_integrate_langs if integrate_subs else []
+        expected_chapters = integrate_chapters
+
+        ok = check_mkv_integrity(
+            final_file,
+            expected_video_codec=USER_SELECTED_VIDEO_CODEC,
+            expected_audio_codec=USER_SELECTED_AUDIO_CODEC,
+            expected_sub_langs=USER_SELECTED_SUB_LANGS if USER_INTEGRATE_SUBS else [],
+            expected_chapters=USER_INTEGRATE_CHAPTERS
+        )
+        if not ok:
+            log_debug("Файл MKV не соответствует выбранным опциям — запускаем принудительную интеграцию.")
+            print(Fore.YELLOW + "Файл MKV не содержит все выбранные дорожки. Запускается повторная интеграция..." + Style.RESET_ALL)
+            if downloaded_file and Path(downloaded_file).is_file():
+                mux_mkv_with_subs_and_chapters(
+                    downloaded_file, output_name, output_path,
+                    subs_to_integrate_langs, subtitle_download_options,
+                    integrate_subs, keep_sub_files,
+                    integrate_chapters, keep_chapter_file, chapter_filename
+                )
+            else:
+                print(Fore.RED + "Ошибка: итоговый файл для интеграции не найден." + Style.RESET_ALL)
+                log_debug("Ошибка: итоговый файл для интеграции не найден.")
+        else:
+            log_debug("Файл MKV успешно прошёл финальную проверку по всем выбранным опциям.") 
 
 if __name__ == '__main__':
     main()
