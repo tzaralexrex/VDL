@@ -224,6 +224,15 @@ except ImportError:
 
 init(autoreset=True)  # Инициализация colorama и автоматический сброс цвета после каждого print
 
+def fallback_download(url):
+    """
+    Заглушка для fallback-скачивания.
+    В дальнейшем здесь будет реализован автоматический анализ страницы и поиск видео.
+    """
+    print("\n" + Fore.YELLOW + "[Fallback] yt-dlp не поддерживает этот сайт. Будет предпринята попытка автоматического поиска видео на странице..." + Style.RESET_ALL)
+    log_debug(f"[Fallback] Запуск fallback-скачивания для URL: {url}")
+    # TODO: Реализовать дальнейшие шаги алгоритма
+
 ## --- Проверка валидности cookie-файла для платформы ---
 def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
     """
@@ -2513,9 +2522,8 @@ def download_tasks(tasks):
                     print(Fore.YELLOW + f"Видео недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
                     log_debug(f"Видео недоступно: {e}")
                     break
-                if "cannot parse data" in err_text or "extractorerror" in err_text:
-                    print(Fore.RED + "Ошибка: yt-dlp не может обработать данные с этой ссылки. Возможно, сайт изменил структуру или требуется обновление yt-dlp." + Style.RESET_ALL)
-                    print(Fore.YELLOW + "Попробуйте обновить yt-dlp или использовать другую ссылку." + Style.RESET_ALL)
+                if "cannot parse data" in err_text or "extractorerror" in err_text or "unsupported site" in err_text:
+                    fallback_download(entry_url)
                     break
                 if "network" in err_text or "timeout" in err_text or "connection" in err_text or "http error" in err_text:
                     print(Fore.RED + f"Ошибка сети при получении информации о видео (попытка {attempt}/{MAX_RETRIES}). Проверьте интернет и попробуйте снова." + Style.RESET_ALL)
@@ -2844,9 +2852,8 @@ def main():
                     print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
                     raw_url = None
                     break
-                if "cannot parse data" in err_text or "extractorerror" in err_text:
-                    print(Fore.RED + "Ошибка: yt-dlp не может обработать данные с этой ссылки. Возможно, сайт изменил структуру или требуется обновление yt-dlp." + Style.RESET_ALL)
-                    print(Fore.YELLOW + "Попробуйте обновить yt-dlp или использовать другую ссылку." + Style.RESET_ALL)
+                if "cannot parse data" in err_text or "extractorerror" in err_text or "unsupported site" in err_text:
+                    fallback_download(url)
                     raw_url = None
                     break
                 if "network" in err_text or "timeout" in err_text or "connection" in err_text or "http error" in err_text:
@@ -3502,9 +3509,13 @@ def main():
         try:
             video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(info['formats'])
         except DownloadError as e:
+            err_text = str(e).lower()
             if is_video_unavailable_error(e):
                 print(Fore.YELLOW + "Видео недоступно (премьера/скрыто/удалено). Завершение." + Style.RESET_ALL)
                 log_debug(f"Одиночное видео недоступно: {e}")
+                return
+            elif "cannot parse data" in err_text or "extractorerror" in err_text or "unsupported site" in err_text:
+                fallback_download(url)
                 return
             else:
                 print(Fore.RED + f"Ошибка загрузки видео: {e}" + Style.RESET_ALL)
