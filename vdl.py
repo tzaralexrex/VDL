@@ -226,12 +226,26 @@ init(autoreset=True)  # Инициализация colorama и автомати�
 
 def fallback_download(url):
     """
-    Заглушка для fallback-скачивания.
-    В дальнейшем здесь будет реализован автоматический анализ страницы и поиск видео.
+    Fallback-скачивание: попытка автоматического поиска видео на странице.
+    Поддержка: Windows, MacOS, Linux.
     """
     print("\n" + Fore.YELLOW + "[Fallback] yt-dlp не поддерживает этот сайт. Будет предпринята попытка автоматического поиска видео на странице..." + Style.RESET_ALL)
     log_debug(f"[Fallback] Запуск fallback-скачивания для URL: {url}")
-    # TODO: Реализовать дальнейшие шаги алгоритма
+
+    try:
+        resp = requests.get(url, timeout=15)
+        if not resp.ok or not resp.text:
+            print(Fore.RED + f"[Fallback] Не удалось получить HTML-код страницы ({resp.status_code}). Проверьте ссылку или доступность сайта." + Style.RESET_ALL)
+            log_debug(f"[Fallback] Ошибка получения HTML: status={resp.status_code}, url={url}")
+            return
+        html = resp.text
+        print(Fore.GREEN + "[Fallback] HTML-код страницы успешно получен." + Style.RESET_ALL)
+        log_debug(f"[Fallback] HTML-код страницы получен, длина: {len(html)}")
+        # TODO: Следующий шаг — парсинг HTML и поиск ссылок на видео/потоки
+    except Exception as e:
+        print(Fore.RED + f"[Fallback] Ошибка при получении HTML-кода страницы: {e}" + Style.RESET_ALL)
+        log_debug(f"[Fallback] Ошибка при получении HTML-кода: {e}\n{traceback.format_exc()}")
+        return
 
 ## --- Проверка валидности cookie-файла для платформы ---
 def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
@@ -2522,7 +2536,10 @@ def download_tasks(tasks):
                     print(Fore.YELLOW + f"Видео недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
                     log_debug(f"Видео недоступно: {e}")
                     break
-                if "cannot parse data" in err_text or "extractorerror" in err_text or "unsupported site" in err_text:
+                if ("cannot parse data" in err_text or
+                    "extractorerror" in err_text or
+                    "unsupported site" in err_text or
+                    "unsupported url" in err_text):
                     fallback_download(entry_url)
                     break
                 if "network" in err_text or "timeout" in err_text or "connection" in err_text or "http error" in err_text:
@@ -2852,7 +2869,10 @@ def main():
                     print(Fore.RED + "Введена некорректная ссылка. Попробуйте снова." + Style.RESET_ALL)
                     raw_url = None
                     break
-                if "cannot parse data" in err_text or "extractorerror" in err_text or "unsupported site" in err_text:
+                elif ("cannot parse data" in err_text or
+                    "extractorerror" in err_text or
+                    "unsupported site" in err_text or
+                    "unsupported url" in err_text):
                     fallback_download(url)
                     raw_url = None
                     break
@@ -3514,7 +3534,10 @@ def main():
                 print(Fore.YELLOW + "Видео недоступно (премьера/скрыто/удалено). Завершение." + Style.RESET_ALL)
                 log_debug(f"Одиночное видео недоступно: {e}")
                 return
-            elif "cannot parse data" in err_text or "extractorerror" in err_text or "unsupported site" in err_text:
+            elif ("cannot parse data" in err_text or
+                "extractorerror" in err_text or
+                "unsupported site" in err_text or
+                "unsupported url" in err_text):
                 fallback_download(url)
                 return
             else:
