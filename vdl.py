@@ -334,26 +334,6 @@ def fallback_download(url):
                 print(Fore.YELLOW + "Скачивание отменено пользователем." + Style.RESET_ALL)
                 return
 
-            # Парсим выбор пользователя
-            def parse_selection(selection, total):
-                result = set()
-                if not selection or selection.strip() == '0':
-                    return set(range(1, total + 1))
-                parts = [p.strip() for p in re.split(r'[ ,;]+', selection) if p.strip()]
-                for part in parts:
-                    if '-' in part:
-                        if re.fullmatch(r'\d+-\d+', part):
-                            start, end = map(int, part.split('-', 1))
-                            result.update(range(start, end + 1))
-                        elif re.fullmatch(r'\d+-', part):
-                            start = int(part[:-1])
-                            result.update(range(start, total + 1))
-                    elif part.isdigit():
-                        num = int(part)
-                        if 1 <= num <= total:
-                            result.add(num)
-                return sorted(result)
-
             selected_indexes = parse_selection(sel, len(sorted_links))
             if not selected_indexes:
                 print(Fore.YELLOW + "Не выбрано ни одной ссылки. Пропуск." + Style.RESET_ALL)
@@ -372,8 +352,29 @@ def fallback_download(url):
                 abs_links.append(abs_link)
                 print(Fore.GREEN + f"Ссылка для скачивания: {abs_link}" + Style.RESET_ALL)
 
-            # --- Запускаем скачивание через yt-dlp ---
+            # --- Новый блок: проверка наличия файла через HEAD-запрос ---
+            def check_url_exists(url):
+                try:
+                    resp = requests.head(url, allow_redirects=True, timeout=7)
+                    return resp.status_code == 200
+                except Exception as e:
+                    log_debug(f"[Fallback] HEAD-запрос не удался для {url}: {e}")
+                    return False
+
+            valid_links = []
             for abs_link in abs_links:
+                print(Fore.YELLOW + f"Проверка наличия файла: {abs_link}" + Style.RESET_ALL)
+                if check_url_exists(abs_link):
+                    valid_links.append(abs_link)
+                else:
+                    print(Fore.RED + f"Файл не найден (404): {abs_link}" + Style.RESET_ALL)
+
+            if not valid_links:
+                print(Fore.RED + "Не найдено ни одного доступного файла для скачивания." + Style.RESET_ALL)
+                return
+
+            # --- Запускаем скачивание через yt-dlp ---
+            for abs_link in valid_links:
                 try:
                     print(Fore.YELLOW + f"\nСкачивание: {abs_link}" + Style.RESET_ALL)
                     with yt_dlp.YoutubeDL({'outtmpl': '%(title)s.%(ext)s'}) as ydl:
