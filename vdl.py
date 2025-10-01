@@ -241,7 +241,150 @@ def fallback_download(url):
         html = resp.text
         print(Fore.GREEN + "[Fallback] HTML-код страницы успешно получен." + Style.RESET_ALL)
         log_debug(f"[Fallback] HTML-код страницы получен, длина: {len(html)}")
-        # TODO: Следующий шаг — парсинг HTML и поиск ссылок на видео/потоки
+
+        # --- Парсинг HTML: поиск прямых ссылок на видео --- 
+        video_links = set()
+        # ...поиск <video>, <source>, прямых ссылок...
+
+        # --- Новый блок: поиск кастомных data-video объектов ---
+        # Ищем <div ... data-video="{...}">
+        data_video_blocks = re.findall(r'data-video=[\'"]({.*?})[\'"]', html, re.DOTALL)
+        for block in data_video_blocks:
+            try:
+                import json
+                data = json.loads(block.replace('&quot;', '"'))
+                # Пробуем извлечь путь к видео
+                path = data.get('path', '')
+                file = data.get('file', '')
+                # Иногда расширение не указано, пробуем стандартные
+                for ext in ['.mp4', '.webm', '.mov', '.avi']:
+                    candidate = f"{path}{file}{ext}"
+                    video_links.add(candidate)
+                # Если есть quality->sd->src
+                sd_src = data.get('quality', {}).get('sd', {}).get('src', '')
+                if sd_src:
+                    video_links.add(sd_src)
+            except Exception as e:
+                log_debug(f"[Fallback] Ошибка парсинга data-video: {e}")
+
+        # --- Можно добавить поиск ссылок в <script> и других data-* атрибутах ---
+        data_srcs = re.findall(r'data-src=["\']([^"\']+)["\']', html, re.I)
+        data_files = re.findall(r'data-file=["\']([^"\']+)["\']', html, re.I)
+        data_streams = re.findall(r'data-stream=["\']([^"\']+)["\']', html, re.I)
+        video_links.update(data_srcs)
+        video_links.update(data_files)
+        video_links.update(data_streams)
+
+        # --- Новый блок: поиск iframe, embed, внешних видеохостингов ---
+        # Ищем <iframe src="...">
+        iframe_srcs = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
+        # Ищем <embed src="...">
+        embed_srcs = re.findall(r'<embed[^>]+src=["\']([^"\']+)["\']', html, re.I)
+        # Ищем <object data="...">
+        object_datas = re.findall(r'<object[^>]+data=["\']([^"\']+)["\']', html, re.I)
+
+        # Добавляем найденные ссылки
+        video_links.update(iframe_srcs)
+        video_links.update(embed_srcs)
+        video_links.update(object_datas)
+
+        # Ищем ссылки на внешние видеохостинги (YouTube, Vimeo, Rutube, VK, Dailymotion и др.)
+        external_patterns = [
+            r'https?://(?:www\.)?youtube\.com/embed/[^\s\'"<>]+',
+            r'https?://(?:www\.)?youtu\.be/[^\s\'"<>]+',
+            r'https?://(?:player\.)?vimeo\.com/[^\s\'"<>]+',
+            r'https?://(?:www\.)?rutube\.ru/play/embed/[^\s\'"<>]+',
+            r'https?://(?:vk\.com|vkontakte\.ru)/video_ext\.php\?[^"\'>]+',
+            r'https?://(?:www\.)?dailymotion\.com/embed/video/[^\s\'"<>]+',
+        ]
+        for pat in external_patterns:
+            found = re.findall(pat, html, re.I)
+            video_links.update(found)
+
+        # Выводим найденные iframe/embed/внешние ссылки отдельно
+        if iframe_srcs or embed_srcs or object_datas:
+            print(Fore.YELLOW + "\n[Fallback] Найдены встроенные объекты (iframe/embed/object):" + Style.RESET_ALL)
+            for idx, link in enumerate(sorted(set(iframe_srcs + embed_srcs + object_datas)), 1):
+                print(f"{idx}: {link}")
+            log_debug(f"[Fallback] Найдено {len(set(iframe_srcs + embed_srcs + object_datas))} встроенных ссылок: {set(iframe_srcs + embed_srcs + object_datas)}")
+
+        if any(re.findall(pat, html, re.I) for pat in external_patterns):
+            print(Fore.YELLOW + "\n[Fallback] Найдены ссылки на внешние видеохостинги:" + Style.RESET_ALL)
+            ext_links = []
+            for pat in external_patterns:
+                ext_links += re.findall(pat, html, re.I)
+            for idx, link in enumerate(sorted(set(ext_links)), 1):
+                print(f"{idx}: {link}")
+            log_debug(f"[Fallback] Найдено {len(set(ext_links))} внешних ссылок: {set(ext_links)}")
+
+        # Можно добавить рекурсивный парсинг по найденным iframe/embed/object ссылкам (по желанию)
+
+        # Итоговый вывод всех уникальных ссылок
+        if video_links:
+            print(Fore.YELLOW + "\n[Fallback] Все найденные уникальные ссылки (видео/потоки/встроенные):" + Style.RESET_ALL)
+            sorted_links = sorted(video_links)
+            for idx, link in enumerate(sorted_links, 1):
+                print(f"{idx}: {link}")
+            log_debug(f"[Fallback] Итоговые уникальные ссылки: {sorted_links}")
+
+            # --- Новый блок: выбор номера для скачивания ---
+            print(Fore.CYAN + "\nВведите номер(а) ссылки для скачивания (через запятую, пробелы, диапазоны через тире). Enter — отмена." + Style.RESET_ALL)
+            sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
+            if not sel:
+                print(Fore.YELLOW + "Скачивание отменено пользователем." + Style.RESET_ALL)
+                return
+
+            # Парсим выбор пользователя
+            def parse_selection(selection, total):
+                result = set()
+                if not selection or selection.strip() == '0':
+                    return set(range(1, total + 1))
+                parts = [p.strip() for p in re.split(r'[ ,;]+', selection) if p.strip()]
+                for part in parts:
+                    if '-' in part:
+                        if re.fullmatch(r'\d+-\d+', part):
+                            start, end = map(int, part.split('-', 1))
+                            result.update(range(start, end + 1))
+                        elif re.fullmatch(r'\d+-', part):
+                            start = int(part[:-1])
+                            result.update(range(start, total + 1))
+                    elif part.isdigit():
+                        num = int(part)
+                        if 1 <= num <= total:
+                            result.add(num)
+                return sorted(result)
+
+            selected_indexes = parse_selection(sel, len(sorted_links))
+            if not selected_indexes:
+                print(Fore.YELLOW + "Не выбрано ни одной ссылки. Пропуск." + Style.RESET_ALL)
+                return
+
+            # --- Преобразуем относительные ссылки в абсолютные ---
+            from urllib.parse import urljoin
+            base_url = url
+            abs_links = []
+            for idx in selected_indexes:
+                link = sorted_links[idx - 1]
+                if link.startswith('/'):
+                    abs_link = urljoin(base_url, link)
+                else:
+                    abs_link = link
+                abs_links.append(abs_link)
+                print(Fore.GREEN + f"Ссылка для скачивания: {abs_link}" + Style.RESET_ALL)
+
+            # --- Запускаем скачивание через yt-dlp ---
+            for abs_link in abs_links:
+                try:
+                    print(Fore.YELLOW + f"\nСкачивание: {abs_link}" + Style.RESET_ALL)
+                    with yt_dlp.YoutubeDL({'outtmpl': '%(title)s.%(ext)s'}) as ydl:
+                        ydl.download([abs_link])
+                except Exception as e:
+                    print(Fore.RED + f"Ошибка при скачивании {abs_link}: {e}" + Style.RESET_ALL)
+                    log_debug(f"[Fallback] Ошибка при скачивании {abs_link}: {e}")
+
+            print(Fore.CYAN + "\nСкачивание завершено." + Style.RESET_ALL)
+            return
+        
     except Exception as e:
         print(Fore.RED + f"[Fallback] Ошибка при получении HTML-кода страницы: {e}" + Style.RESET_ALL)
         log_debug(f"[Fallback] Ошибка при получении HTML-кода: {e}\n{traceback.format_exc()}")
