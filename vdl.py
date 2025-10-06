@@ -1390,6 +1390,14 @@ def download_video(
         print(Fore.RED + "FFmpeg не найден – установка обязательна." + Style.RESET_ALL)
         return None
 
+    # --- Если выбран m3u8/HLS, используем ручное скачивание ---
+    info = get_video_info(url, platform, cookie_file_path)
+    hls_formats = [f for f in info.get('formats', []) if f.get('ext') == 'm3u8' and f.get('url')]
+    if hls_formats:
+        m3u8_url = hls_formats[-1]['url']
+        print(Fore.YELLOW + "Обнаружен HLS-поток, запускается контролируемое скачивание фрагментов..." + Style.RESET_ALL)
+        return download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path)
+    
     # ---------------- 1. Формируем строку для --format -----------------
     manifest_mode = False
     if isinstance(video_id, str) and '+' in video_id:          # bestvideo+bestaudio
@@ -1685,6 +1693,79 @@ def download_video(
 
     return None  # если вышли из цикла без успеха
 
+def download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path=None, max_retries=5):
+    """
+    Скачивает HLS-фрагменты вручную, объединяет их в итоговый файл.
+    Не пропускает фрагменты, делает повторные попытки.
+    Поддержка куки-файлов.
+    """
+    temp_folder = Path(output_path) / f"{output_name}_frags"
+    temp_folder.mkdir(parents=True, exist_ok=True)
+
+    # --- Загружаем куки, если указаны ---
+    cookies = None
+    if cookie_file_path and Path(cookie_file_path).is_file():
+        cj = http.cookiejar.MozillaCookieJar(cookie_file_path)
+        cj.load(ignore_discard=True, ignore_expires=True)
+        cookies = requests.utils.dict_from_cookiejar(cj)
+
+    m3u8_resp = requests.get(m3u8_url, timeout=15, cookies=cookies)
+    if not m3u8_resp.ok:
+        print(Fore.RED + f"Не удалось получить m3u8: {m3u8_url}" + Style.RESET_ALL)
+        return None
+    lines = m3u8_resp.text.splitlines()
+    fragment_urls = [line.strip() for line in lines if line and not line.startswith("#")]
+    print(Fore.YELLOW + f"Всего фрагментов: {len(fragment_urls)}" + Style.RESET_ALL)
+    failed_frags = []
+    for idx, frag_url in enumerate(fragment_urls, 1):
+        frag_name = f"frag_{idx:04d}.ts"
+        frag_path = temp_folder / frag_name
+        for attempt in range(1, max_retries + 1):
+            try:
+                frag_resp = requests.get(frag_url, timeout=15, cookies=cookies)
+                if frag_resp.ok and frag_resp.content:
+                    with open(frag_path, "wb") as f:
+                        f.write(frag_resp.content)
+                    print(Fore.GREEN + f"Фрагмент {idx}/{len(fragment_urls)} скачан." + Style.RESET_ALL)
+                    break
+                else:
+                    print(Fore.YELLOW + f"Фрагмент {idx} не скачан (попытка {attempt})." + Style.RESET_ALL)
+            except Exception as e:
+                print(Fore.RED + f"Ошибка скачивания фрагмента {idx} (попытка {attempt}): {e}" + Style.RESET_ALL)
+            time.sleep(2)
+        else:
+            failed_frags.append(idx)
+    if failed_frags:
+        print(Fore.RED + f"Не удалось скачать фрагменты: {failed_frags}" + Style.RESET_ALL)
+        return None
+    # Объединяем фрагменты через ffmpeg
+    concat_file = temp_folder / "frags.txt"
+    with open(concat_file, "w", encoding="utf-8") as f:
+        for idx in range(1, len(fragment_urls) + 1):
+            f.write(f"file '{temp_folder / f'frag_{idx:04d}.ts'}'\n")
+    final_file = Path(output_path) / f"{output_name}.mp4"
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_file),
+        "-c", "copy", str(final_file)
+    ]
+    print(Fore.YELLOW + "Объединение фрагментов..." + Style.RESET_ALL)
+    try:
+        subprocess.run(ffmpeg_cmd, check=True)
+        print(Fore.GREEN + f"Видео собрано: {final_file}" + Style.RESET_ALL)
+        # --- Очистка временных файлов ---
+        for frag_file in temp_folder.glob("frag_*.ts"):
+            try:
+                frag_file.unlink()
+            except Exception:
+                pass
+        concat_file.unlink()
+        temp_folder.rmdir()
+        return str(final_file)
+    except Exception as e:
+        print(Fore.RED + f"Ошибка при объединении: {e}" + Style.RESET_ALL)
+        return None
+    
 def save_chapters_to_file(chapters, path):
     """
     Сохраняет главы видео в файл ffmetadata для интеграции в MKV.
