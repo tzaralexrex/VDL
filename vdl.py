@@ -1408,7 +1408,7 @@ def download_video(
         'format'           : format_string,
         'outtmpl'          : full_tmpl,
         'quiet'            : False,
-        'ffmpeg_location'  : ffmpeg_path,
+        'ffmpeg_location'  : str(ffmpeg_path),
         'overwrites'       : True,
         'continuedl'       : True,
         'writedescription' : False,
