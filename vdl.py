@@ -49,6 +49,7 @@ COOKIES_VI = 'cookies_vi.txt'      # Vimeo
 COOKIES_RT = 'cookies_rt.txt'      # Rutube
 COOKIES_VK = 'cookies_vk.txt'      # VK
 COOKIES_GOOGLE = "cookies_google.txt" # Google
+COOKIES_TG = 'cookies_tg.txt'       # Telegram
 
 MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
 
@@ -246,7 +247,12 @@ def fallback_download(url):
         video_links = set()
         # ...поиск <video>, <source>, прямых ссылок...
 
-        # --- Новый блок: поиск кастомных data-video объектов ---
+        # --- Для Telegram: ищем ссылки на видео/файлы ---
+        if "t.me/" in url or "telegram.me/" in url:
+            # Пример поиска ссылок на CDN Telegram
+            video_links.update(re.findall(r'https://cdn\.telegram-cdn\.org/file/[^\s"\'<>]+', html))
+
+        # --- Поиск кастомных data-video объектов ---
         # Ищем <div ... data-video="{...}">
         data_video_blocks = re.findall(r'data-video=[\'"]({.*?})[\'"]', html, re.DOTALL)
         for block in data_video_blocks:
@@ -275,7 +281,7 @@ def fallback_download(url):
         video_links.update(data_files)
         video_links.update(data_streams)
 
-        # --- Новый блок: поиск iframe, embed, внешних видеохостингов ---
+        # --- Поиск iframe, embed, внешних видеохостингов ---
         # Ищем <iframe src="...">
         iframe_srcs = re.findall(r'<iframe[^>]+src=["\']([^"\']+)["\']', html, re.I)
         # Ищем <embed src="...">
@@ -479,6 +485,13 @@ def clean_url_by_platform(platform: str, url: str) -> str:
         elif platform == 'rutube':
             return url.split('?')[0]
 
+        elif platform == 'telegram':
+            # Удаляем query и fragment
+            from urllib.parse import urlparse, urlunparse
+            parts = urlparse(url)
+            clean_url = urlunparse((parts.scheme, parts.netloc, parts.path, '', '', ''))
+            return clean_url      
+
     except Exception as e:
         # Логируем ошибку, если не удалось обработать ссылку
         log_debug(f"Ошибка при очистке URL для {platform}: {e}")
@@ -500,6 +513,7 @@ def extract_platform_and_url(raw_url: str):
         'vimeo':    [r'(?:vimeo\.com)'],
         'rutube':   [r'(?:rutube\.ru)'],
         'vk':       [r'(?:vk\.com|vkontakte\.ru)'],
+        'telegram': [r'(?:t\.me|telegram\.me)'],
     }
 
     # Перебираем платформы и паттерны для поиска совпадения
@@ -580,6 +594,7 @@ def get_cookies_for_platform(platform: str, cookie_file: str, url: str = None, f
         'vimeo':    ['vimeo.com'],
         'rutube':   ['rutube.ru'],
         'vk':       ['vk.com'],
+        'telegram': ['t.me', 'telegram.me'], 
     }
 
     print(Fore.YELLOW + f"Примечание: Для автоматического получения куков из браузера (Chrome/Firefox), "
@@ -653,6 +668,9 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             log_debug("get_video_info: После вызова ydl.extract_info")
+            if info is None:
+                log_debug("get_video_info: yt-dlp вернул None для info")
+                raise DownloadError("yt-dlp не вернул информацию (info=None)")
             extractor = info.get('extractor', 'unknown')
             info_type = info.get('_type', 'video')
             log_debug(f"get_video_info: extractor={extractor}, _type={info_type}, title={info.get('title', 'N/A')}, id={info.get('id', 'N/A')}")
@@ -3076,6 +3094,7 @@ def main():
             "vimeo":    COOKIES_VI,
             "rutube":   COOKIES_RT,
             "vk":       COOKIES_VK,
+            "telegram": COOKIES_TG,
         }
         cookie_file_to_use = None
         info = None
