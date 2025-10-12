@@ -128,6 +128,7 @@ def log_debug(message):
 requests = importlib.import_module('requests')
 packaging = importlib.import_module('packaging')
 from packaging.version import parse as parse_version
+from glob import glob
 
 ## --- Универсальный импорт и автообновление внешних модулей ---
 ## Используется для автоматической установки и обновления зависимостей
@@ -236,9 +237,29 @@ def fallback_download(url):
     try:
         resp = requests.get(url, timeout=15)
         if not resp.ok or not resp.text:
-            print(Fore.RED + f"[Fallback] Не удалось получить HTML-код страницы ({resp.status_code}). Проверьте ссылку или доступность сайта." + Style.RESET_ALL)
-            log_debug(f"[Fallback] Ошибка получения HTML: status={resp.status_code}, url={url}")
-            return
+            # --- Пробуем разные куки-файлы для обхода 403 ---
+            cookie_candidates = ["cookies.txt"] + sorted([
+                fname for fname in glob("cookies_*.txt")
+                if fname.lower() != "cookies.txt"
+            ])
+            for cookie_file in cookie_candidates:
+                if Path(cookie_file).is_file():
+                    try:
+                        cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                        cj.load(ignore_discard=True, ignore_expires=True)
+                        cookies = requests.utils.dict_from_cookiejar(cj)
+                        resp2 = requests.get(url, timeout=15, cookies=cookies)
+                        if resp2.ok and resp2.text:
+                            print(Fore.GREEN + f"[Fallback] Получено HTML с помощью куки-файла: {cookie_file}" + Style.RESET_ALL)
+                            html = resp2.text
+                            break
+                    except Exception as e:
+                        log_debug(f"[Fallback] Ошибка с куки-файлом {cookie_file}: {e}")
+            else:
+                # Если ни один куки-файл не помог — выводим ошибку
+                print(Fore.RED + f"[Fallback] Не удалось получить HTML-код страницы ({resp.status_code}). Проверьте ссылку или доступность сайта." + Style.RESET_ALL)
+                log_debug(f"[Fallback] Ошибка получения HTML: status={resp.status_code}, url={url}")
+                return
         html = resp.text
         print(Fore.GREEN + "[Fallback] HTML-код страницы успешно получен." + Style.RESET_ALL)
         log_debug(f"[Fallback] HTML-код страницы получен, длина: {len(html)}")
@@ -288,6 +309,20 @@ def fallback_download(url):
         embed_srcs = re.findall(r'<embed[^>]+src=["\']([^"\']+)["\']', html, re.I)
         # Ищем <object data="...">
         object_datas = re.findall(r'<object[^>]+data=["\']([^"\']+)["\']', html, re.I)
+        # Универсальный поиск прямых ссылок на потоки/файлы (.m3u8, .mpd, .mp4, .webm)
+        playlist_links = re.findall(r'https?://[^\s"\'<>]+?\.(m3u8|mpd|mp4|webm)', html)
+        if playlist_links:
+            print(Fore.YELLOW + "\n[Fallback] Найдены прямые ссылки на потоки/файлы:" + Style.RESET_ALL)
+            for idx, link in enumerate(playlist_links, 1):
+                print(f"{idx}: {link}")
+            sel = input(Fore.CYAN + "Скачать этот поток? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
+            if sel in ("", "1"):
+                try:
+                    with yt_dlp.YoutubeDL({'outtmpl': '%(title)s.%(ext)s'}) as ydl:
+                        ydl.download([playlist_links[0]])
+                except Exception as e:
+                    print(Fore.RED + f"Ошибка при скачивании потока: {e}" + Style.RESET_ALL)
+            return
 
         # Добавляем найденные ссылки
         video_links.update(iframe_srcs)
@@ -333,7 +368,7 @@ def fallback_download(url):
                 print(f"{idx}: {link}")
             log_debug(f"[Fallback] Итоговые уникальные ссылки: {sorted_links}")
 
-            # --- Новый блок: выбор номера для скачивания ---
+            # --- Выбор номера для скачивания ---
             print(Fore.CYAN + "\nВведите номер(а) ссылки для скачивания (через запятую, пробелы, диапазоны через тире). Enter — отмена." + Style.RESET_ALL)
             sel = input(Fore.CYAN + "Ваш выбор: " + Style.RESET_ALL).strip()
             if not sel:
@@ -358,7 +393,7 @@ def fallback_download(url):
                 abs_links.append(abs_link)
                 print(Fore.GREEN + f"Ссылка для скачивания: {abs_link}" + Style.RESET_ALL)
 
-            # --- Новый блок: проверка наличия файла через HEAD-запрос ---
+            # --- Проверка наличия файла через HEAD-запрос ---
             def check_url_exists(url):
                 try:
                     resp = requests.head(url, allow_redirects=True, timeout=7)
@@ -390,6 +425,11 @@ def fallback_download(url):
                     log_debug(f"[Fallback] Ошибка при скачивании {abs_link}: {e}")
 
             print(Fore.CYAN + "\nСкачивание завершено." + Style.RESET_ALL)
+            return
+        
+        if not video_links:
+            print(Fore.YELLOW + "[Fallback] На странице не найдено постоянных ссылок на видео или плейлисты. Возможно, видео загружается динамически через JS или защищённые потоки." + Style.RESET_ALL)
+            log_debug("[Fallback] Нет постоянных ссылок на видео/потоки.")
             return
         
     except Exception as e:
@@ -1682,7 +1722,7 @@ def download_video(
                 except Exception as general_err:
                     log_debug(f"Ошибка в блоке устранения блокировки: {general_err}")
 
-            # --- Новый блок: обновление куков перед повтором ---
+            # --- Обновление куков перед повтором ---
             if retriable and attempt < MAX_RETRIES:
                 # Только для поддерживаемых платформ
                 cookie_map = {
@@ -2449,7 +2489,7 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
             print(Fore.GREEN + f"Будут скачаны видео: {', '.join(str(i) for i in selected_indexes)}" + Style.RESET_ALL)
             log_debug(f"Выбраны номера видео для скачивания из '{pl_title}': {selected_indexes}")
 
-            # --- Новый блок: выбор ручной/автоматический режим для этого подплейлиста ---
+            # --- Выбор ручной/автоматический режим для этого подплейлиста ---
             cmdline_auto_mode = auto_mode
             local_auto_mode = cmdline_auto_mode
             if not cmdline_auto_mode:
@@ -3359,7 +3399,7 @@ def main():
             print_playlists_tree(playlists_struct)
 
             # process_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use)
-            # --- Новый порядок: сначала собираем все задачи, потом скачиваем ---
+            # --- Сначала собираем все задачи, потом скачиваем ---
             tasks = collect_user_choices_for_playlists(playlists_struct, output_path, auto_mode, platform, args, cookie_file_to_use, selected_video_ids={})
             print(Fore.YELLOW + "\nВсе параметры выбраны. Начинается скачивание всех выбранных видео..." + Style.RESET_ALL)
             download_tasks(tasks)
