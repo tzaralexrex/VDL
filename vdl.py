@@ -226,6 +226,18 @@ except ImportError:
 
 init(autoreset=True)  # Инициализация colorama и автоматический сброс цвета после каждого print
 
+def check_url_exists(url):
+    """
+    Проверка наличия файла через HEAD-запрос
+    Поддержка: Windows, MacOS, Linux.
+    """
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=7)
+        return resp.status_code == 200
+    except Exception as e:
+        log_debug(f"[Fallback] HEAD-запрос не удался для {url}: {e}")
+        return False
+
 def fallback_download(url):
     """
     Fallback-скачивание: попытка автоматического поиска видео на странице.
@@ -392,15 +404,6 @@ def fallback_download(url):
                     abs_link = link
                 abs_links.append(abs_link)
                 print(Fore.GREEN + f"Ссылка для скачивания: {abs_link}" + Style.RESET_ALL)
-
-            # --- Проверка наличия файла через HEAD-запрос ---
-            def check_url_exists(url):
-                try:
-                    resp = requests.head(url, allow_redirects=True, timeout=7)
-                    return resp.status_code == 200
-                except Exception as e:
-                    log_debug(f"[Fallback] HEAD-запрос не удался для {url}: {e}")
-                    return False
 
             valid_links = []
             for abs_link in abs_links:
@@ -1751,12 +1754,14 @@ def download_video(
 
     return None  # если вышли из цикла без успеха
 
-def download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path=None, max_retries=5):
+def download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path=None, max_retries=None):
     """
     Скачивает HLS-фрагменты вручную, объединяет их в итоговый файл.
     Не пропускает фрагменты, делает повторные попытки.
     Поддержка куки-файлов.
     """
+    if max_retries is None:
+        max_retries = MAX_RETRIES
     temp_folder = Path(output_path) / f"{output_name}_frags"
     temp_folder.mkdir(parents=True, exist_ok=True)
 
@@ -1774,10 +1779,11 @@ def download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path=
     lines = m3u8_resp.text.splitlines()
     fragment_urls = [line.strip() for line in lines if line and not line.startswith("#")]
     print(Fore.YELLOW + f"Всего фрагментов: {len(fragment_urls)}" + Style.RESET_ALL)
-    failed_frags = []
+
     for idx, frag_url in enumerate(fragment_urls, 1):
         frag_name = f"frag_{idx:04d}.ts"
         frag_path = temp_folder / frag_name
+        success = False
         for attempt in range(1, max_retries + 1):
             try:
                 frag_resp = requests.get(frag_url, timeout=15, cookies=cookies)
@@ -1785,17 +1791,41 @@ def download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path=
                     with open(frag_path, "wb") as f:
                         f.write(frag_resp.content)
                     print(Fore.GREEN + f"Фрагмент {idx}/{len(fragment_urls)} скачан." + Style.RESET_ALL)
+                    success = True
                     break
                 else:
                     print(Fore.YELLOW + f"Фрагмент {idx} не скачан (попытка {attempt})." + Style.RESET_ALL)
             except Exception as e:
                 print(Fore.RED + f"Ошибка скачивания фрагмента {idx} (попытка {attempt}): {e}" + Style.RESET_ALL)
             time.sleep(2)
-        else:
-            failed_frags.append(idx)
-    if failed_frags:
-        print(Fore.RED + f"Не удалось скачать фрагменты: {failed_frags}" + Style.RESET_ALL)
-        return None
+        if not success:
+            print(Fore.RED + f"Не удалось скачать фрагмент {idx} после {max_retries} попыток." + Style.RESET_ALL)
+            while True:
+                user_input = input(Fore.CYAN + f"Повторить попытки для фрагмента {idx}? (1 — да, 0 — прервать, Enter = 1): " + Style.RESET_ALL).strip()
+                if user_input in ("", "1"):
+                    print(Fore.YELLOW + f"Повторяем попытки для фрагмента {idx}..." + Style.RESET_ALL)
+                    # Снова пробуем max_retries раз
+                    for attempt in range(1, max_retries + 1):
+                        try:
+                            frag_resp = requests.get(frag_url, timeout=15, cookies=cookies)
+                            if frag_resp.ok and frag_resp.content:
+                                with open(frag_path, "wb") as f:
+                                    f.write(frag_resp.content)
+                                print(Fore.GREEN + f"Фрагмент {idx}/{len(fragment_urls)} скачан." + Style.RESET_ALL)
+                                success = True
+                                break
+                            else:
+                                print(Fore.YELLOW + f"Фрагмент {idx} не скачан (попытка {attempt})." + Style.RESET_ALL)
+                        except Exception as e:
+                            print(Fore.RED + f"Ошибка скачивания фрагмента {idx} (попытка {attempt}): {e}" + Style.RESET_ALL)
+                        time.sleep(2)
+                    if success:
+                        break  # выходим из while True, продолжаем цикл по фрагментам
+                elif user_input == "0":
+                    print(Fore.RED + "Загрузка прервана пользователем." + Style.RESET_ALL)
+                    return None
+                else:
+                    print(Fore.YELLOW + "Некорректный ввод. Введите 1 (повторить) или 0 (прервать)." + Style.RESET_ALL)
     # Объединяем фрагменты через ffmpeg
     concat_file = temp_folder / "frags.txt"
     with open(concat_file, "w", encoding="utf-8") as f:
@@ -2202,6 +2232,15 @@ def mux_mkv_with_subs_and_chapters(
 
     return True
 
+def wait_input(flag):
+    """
+    Ожидает нажатие Enter в отдельном потоке, устанавливает флаг при вводе.
+    Используется для кроссплатформенного ожидания ввода с таймаутом.
+    Поддержка: Windows, MacOS, Linux.
+    """
+    input()
+    flag[0] = True
+
 def wait_keys(wait_only_enter, enter_pressed, timeout):
     """
     Ожидает нажатие клавиши Enter или таймаут, поддерживает паузу по Space.
@@ -2242,11 +2281,6 @@ def wait_keys(wait_only_enter, enter_pressed, timeout):
         else:
             # Кроссплатформенный вариант: input с таймаутом через поток
             import threading
-
-            def wait_input(flag):
-                input()
-                flag[0] = True
-
             flag = [False]
             input_thread = threading.Thread(target=wait_input, args=(flag,))
             input_thread.daemon = True
