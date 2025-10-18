@@ -1131,8 +1131,12 @@ def ask_and_select_subtitles(info, auto_mode=False):
             return None
         download_automatics.update(selected_langs)
         write_automatic = True if selected_langs else False
+        
+        # Инициализируем переменные ДО условных блоков
         normalize_auto_subs = False
         keep_original_auto_subs = False
+        add_auto_suffix = True  # по умолчанию True
+        
         if write_automatic and not auto_mode:
             norm_ans = input(Fore.CYAN + "Нормализовать автоматические субтитры (убрать перекрытия таймингов)? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
             normalize_auto_subs = (norm_ans != "0")
@@ -1368,16 +1372,25 @@ def ask_output_format(default_format, auto_mode=False, subtitle_options=None, ha
     Поддержка: Windows, MacOS, Linux.
     """
     formats = ['mp4', 'mkv', 'avi', 'webm']
+    
+    # Явная проверка типов и значений по умолчанию
+    if subtitle_options is None:
+        subtitle_options = {}
+    
     # --- Определяем дефолтный формат ---
     mkv_needed = False
     if subtitle_options:
         # Если выбраны встроенные субтитры
         if subtitle_options.get('writesubtitles') or subtitle_options.get('writeautomaticsub'):
             mkv_needed = True
-    if has_chapters:
+    
+    # Явная проверка has_chapters
+    if has_chapters and isinstance(has_chapters, bool):
         mkv_needed = True
+    
     if mkv_needed:
         default_format = 'mkv'
+        
     print("\n" + Fore.MAGENTA + "Выберите выходной формат:" + Style.RESET_ALL)
     for i, f in enumerate(formats):
         print(f"{i}: {f}")
@@ -1387,10 +1400,12 @@ def ask_output_format(default_format, auto_mode=False, subtitle_options=None, ha
         default_format = 'mp4'
         default_format_index = formats.index(default_format)
     log_debug(f"Начальный/дефолтный выходной формат: {default_format} (индекс {default_format_index})")
+    
     if auto_mode:
         print(Fore.GREEN + f"Использование формата по умолчанию: {default_format}" + Style.RESET_ALL)
         log_debug(f"Выбран формат по умолчанию: {default_format} (auto_mode)")
         return default_format
+        
     choice = input(Fore.CYAN + f"Номер формата (по умолчанию {default_format_index}: {default_format}): " + Style.RESET_ALL).strip()
     if not choice:
         print(Fore.GREEN + f"Использование формата по умолчанию: {default_format}" + Style.RESET_ALL)
