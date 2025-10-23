@@ -55,6 +55,52 @@ MAX_RETRIES = 15  # Максимум попыток повторной загр�
 
 CHECK_VER = 1  # Проверять версии зависимостей (1) или только наличие модулей (0)
 
+# --- Настройки для работы с новыми YouTube SABR / PO-Token сценариями ---
+# Если у пользователя есть GVS PO Token — можно задать через переменную окружения YTDLP_PO_TOKEN
+# Если задать YTDLP_ALLOW_MISSING_POT=1 в окружении, то будет разрешено использовать extractor-arg formats=missing_pot
+YTDLP_PO_TOKEN_ENV = "YTDLP_PO_TOKEN"
+YTDLP_ALLOW_MISSING_POT_ENV = "YTDLP_ALLOW_MISSING_POT"
+
+# Поведение по умолчанию (без внешних переменных)
+# YTDLP_ALLOW_MISSING_POT_DEFAULT — если True, будет по умолчанию включён missing_pot (НЕ РЕКОМЕНДУЕТСЯ для общей публики)
+# AUTO_TRY_MISSING_POT_AS_FALLBACK — если True, то при обнаружении SABR/PO-token ошибки скрипт автоматически
+# попробует один раз formats=missing_pot (без запроса пользователя). Это делает работу "из коробки".
+YTDLP_ALLOW_MISSING_POT_DEFAULT = False
+AUTO_TRY_MISSING_POT_AS_FALLBACK = True
+
+# --------------------------------------------------------------------
+# Пояснение по YTDLP_PO_TOKEN / YTDLP_ALLOW_MISSING_POT
+#
+# YTDLP_PO_TOKEN_ENV
+#   - имя переменной окружения, в которую можно поместить GVS PO token
+#     (пример значения: "web.gvs+XXX").
+#   - токен секретный — НЕ храните его в репозитории. Скрипт подставит его
+#     в yt-dlp через extractor_args, если задан, и это предпочтительный способ.
+#
+# YTDLP_ALLOW_MISSING_POT_ENV
+#   - имя переменной окружения для разрешения небезопасного fallback
+#     (extractor-arg "formats=missing_pot").
+# YTDLP_ALLOW_MISSING_POT_DEFAULT
+#   - модульный дефолт (False рекомендуем), учитывается, если env не задана.
+#
+# AUTO_TRY_MISSING_POT_AS_FALLBACK
+#   - если True, при обнаружении ошибок SABR/PO-token скрипт автоматически
+#     один раз попробует formats=missing_pot (предотвращает зацикливание).
+#
+# Рекомендации:
+#   - По умолчанию: YTDLP_ALLOW_MISSING_POT_DEFAULT=False, AUTO_TRY_MISSING_POT_AS_FALLBACK=True.
+#     Скрипт будет работать «из коробки» и только при необходимости выполнит одноразовый fallback.
+#   - Если у вас есть PO token — установите его в окружении (без записи в код):
+#       cmd:  setx YTDLP_PO_TOKEN "web.gvs+ВАШ_ТОКЕН"
+#       PS:   $Env:YTDLP_PO_TOKEN = "web.gvs+ВАШ_ТОКЕН"
+#   - Чтобы явно разрешить missing_pot глобально:
+#       cmd:  setx YTDLP_ALLOW_MISSING_POT "1"
+#       PS:   $Env:YTDLP_ALLOW_MISSING_POT = "1"
+#
+# Безопасность:
+#   - PO token — секрет. formats=missing_pot — небезопасный обход, использовать аккуратно.
+# --------------------------------------------------------------------
+
 # --- Настройки нормализации субтитров ---
 MIN_DISPLAY_MS = 200           # Минимальная длительность блока субтитров, ms
 INTER_CAPTION_GAP_MS = 0       # Межтитровый интервал, ms
@@ -125,9 +171,20 @@ def log_debug(message):
             f.write(log_line)
 
 # --- Импорт сторонних модулей через универсальную функцию ---
-requests = importlib.import_module('requests')
-packaging = importlib.import_module('packaging')
-from packaging.version import parse as parse_version
+try:
+    requests = importlib.import_module('requests')
+except Exception:
+    requests = None
+try:
+    packaging = importlib.import_module('packaging')
+    from packaging.version import parse as parse_version
+except Exception:
+    packaging = None
+    # Простой fallback для parse_version (достаточен для базового сравнения версий)
+    import re
+    def parse_version(v):
+        nums = re.findall(r'\d+', str(v) or "")
+        return tuple(int(x) for x in nums) if nums else (0,)
 from glob import glob
 
 ## --- Универсальный импорт и автообновление внешних модулей ---
@@ -164,15 +221,30 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
         module = importlib.import_module(module_name)
         # Проверяем актуальность версии через запрос к PyPI
         try:
-            resp = requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
-            if resp.ok:
-                latest = resp.json()['info']['version']
+            latest = None
+            # Попытка через requests (если он доступен)
+            if requests is not None:
+                try:
+                    resp = requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
+                    if resp.ok:
+                        latest = resp.json().get('info', {}).get('version')
+                except Exception as _req_err:
+                    log_debug(f"import_or_update: requests запрос к PyPI не удался: {_req_err}")
+            # Фоллбек на urllib, если requests недоступен или упал
+            if not latest:
+                try:
+                    import urllib.request, json
+                    with urllib.request.urlopen(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5) as u:
+                        data = u.read()
+                        info_json = json.loads(data)
+                        latest = info_json.get('info', {}).get('version')
+                except Exception as _url_err:
+                    log_debug(f"import_or_update: urllib запрос к PyPI не удался: {_url_err}")
+            if latest:
                 try:
                     installed = get_version(pypi_name)
                 except PackageNotFoundError:
-                    # --- Если не удалось получить версию через metadata — пробуем через __version__ ---
                     installed = getattr(module, '__version__', None)
-                # Если установленная версия меньше актуальной — обновляем
                 if installed and parse_version(installed) < parse_version(latest):
                     print()
                     print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
@@ -206,11 +278,21 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
 
 # --- Импорт сторонних модулей с автоматической установкой/обновлением ---
 yt_dlp = import_or_update('yt_dlp', force_check=True)
+
+# Гарантируем наличие requests и packaging, т.к. код активно их использует
+requests = import_or_update('requests')
+packaging = import_or_update('packaging')
+
+# Если packaging только что установился — получить корректный parse_version
+try:
+    from packaging.version import parse as parse_version
+except Exception:
+    # parse_version уже определён ранее как fallback — оставляем его
+    pass
+
 browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
-# curl_cffi = import_or_update('curl_cffi')
-# pyppeteer = import_or_update('pyppeteer')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
 
 from yt_dlp.utils import DownloadError
@@ -1033,6 +1115,11 @@ def ask_and_select_subtitles(info, auto_mode=False):
     Запрашивает у пользователя выбор субтитров и их формата.
     Возвращает словарь с параметрами загрузки субтитров.
     """
+    # Инициализируем переменные заранее, чтобы избежать NameError в разных ветках
+    normalize_auto_subs = False
+    keep_original_auto_subs = False
+    add_auto_suffix = True
+
     write_automatic = False
     subtitles_info = info.get('subtitles') or {}
     auto_info = info.get('automatic_captions') or {}
@@ -1466,6 +1553,15 @@ def download_video(
         print(Fore.RED + "FFmpeg не найден – установка обязательна." + Style.RESET_ALL)
         return None
 
+    # --- Подготовка параметров для обхода SABR / PO-Token (YouTube) ---
+    # читаем из переменных окружения (если пользователь заранее настраивает)
+    po_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
+    allow_missing_pot_env = str(os.environ.get(YTDLP_ALLOW_MISSING_POT_ENV, "")).lower() in ("1", "true", "yes")
+    allow_missing_pot = allow_missing_pot_env or bool(YTDLP_ALLOW_MISSING_POT_DEFAULT)
+
+    # внутренний флаг — помечаем в ydl_opts, когда уже пробовали missing_pot, чтобы не зациклиться
+    # (будет выставлен при реальной попытке применить formats=missing_pot)
+
     # --- Если выбран m3u8/HLS, используем ручное скачивание ---
     info = get_video_info(url, platform, cookie_file_path)
     hls_formats = [f for f in info.get('formats', []) if f.get('ext') == 'm3u8' and f.get('url')]
@@ -1499,7 +1595,20 @@ def download_video(
         'writeinfojson'    : False,
         'writesubtitles'   : False,
         'progress_hooks'   : [],      # заполним ниже
+        '_tried_missing_pot': False,  # флаг: уже пробовали formats=missing_pot        
     }
+
+    # --- При необходимости для YouTube: добавить extractor_args заранее (по env) ---
+    if platform == 'youtube':
+        extractor_args = {}
+        if po_token:
+            extractor_args['youtube'] = {'po_token': po_token}
+        elif allow_missing_pot:
+            # Включаем небезопасный fallback — включает "missing_pot" форматы
+            extractor_args['youtube'] = {'formats': 'missing_pot'}
+        if extractor_args:
+            ydl_opts['extractor_args'] = extractor_args
+            log_debug(f"yt-dlp extractor_args set for youtube: {extractor_args}")
 
     # --- Проверка наличия субтитров ---
     if subtitle_options:
@@ -1574,6 +1683,57 @@ def download_video(
 
         except DownloadError as e:
             err_text = str(e)
+            # --- Автоматическая попытка включить extractor_args при ошибках SABR/PO-token/nsig ---
+            sabr_indicators = ("sabr", "web only has sabr", "gvs po token", "po_token", "formats=missing_pot", "nsig", "SABR")
+            if platform == 'youtube' and any(ind.lower() in err_text.lower() for ind in sabr_indicators):
+                current_xa = ydl_opts.get('extractor_args') or {}
+                # Если уже пробовали по-умолчанию — не повторяем бесконечно
+                if not current_xa.get('youtube'):
+                    # Приоритет: po_token из окружения (если есть) — используем сразу
+                    if po_token:
+                        ydl_opts['extractor_args'] = {'youtube': {'po_token': po_token}}
+                        log_debug("DownloadError: обнаружен SABR/PO-token сигнал — пробуем повтор с po_token из окружения.")
+                        print(Fore.YELLOW + "Обнаружен SABR/PO-token сценарий. Повтор с PO token из окружения..." + Style.RESET_ALL)
+                        time.sleep(1)
+                        continue
+
+                    # Если заранее разрешён missing_pot через env/code — применяем его немедленно
+                    if allow_missing_pot:
+                        ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+                        ydl_opts['_tried_missing_pot'] = True
+                        log_debug("DownloadError: пробуем сразу formats=missing_pot (разрешено в настройках).")
+                        print(Fore.YELLOW + "Обнаружен SABR. Повтор с extractor-arg formats=missing_pot..." + Style.RESET_ALL)
+                        time.sleep(1)
+                        continue
+
+                    # Автоматическая одноразовая попытка (без env) — если включено поведение fallback
+                    if AUTO_TRY_MISSING_POT_AS_FALLBACK and not ydl_opts.get('_tried_missing_pot'):
+                        ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+                        ydl_opts['_tried_missing_pot'] = True
+                        log_debug("DownloadError: автоматическая одноразовая попытка formats=missing_pot (fallback).")
+                        print(Fore.YELLOW + "Обнаружен SABR. Автоматическая попытка применить formats=missing_pot..." + Style.RESET_ALL)
+                        time.sleep(1)
+                        continue
+
+                    # Иначе — интерактивный запрос (если нужно)
+                    try:
+                        ans = input(Fore.CYAN + "yt-dlp сообщил о SABR/PO-token проблеме. Ввести PO token сейчас (или 'missing' для formats=missing_pot), Enter — пропустить: " + Style.RESET_ALL).strip()
+                    except Exception:
+                        ans = ""
+                    if ans.lower() == "missing":
+                        ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+                        ydl_opts['_tried_missing_pot'] = True
+                        log_debug("Пользователь выбрал formats=missing_pot для повторной попытки.")
+                        print(Fore.YELLOW + "Повтор с extractor-arg formats=missing_pot..." + Style.RESET_ALL)
+                        time.sleep(1)
+                        continue
+                    elif ans:
+                        ydl_opts['extractor_args'] = {'youtube': {'po_token': ans}}
+                        log_debug("Пользователь ввёл PO token вручную — повтор с ним.")
+                        print(Fore.YELLOW + "Повтор с введённым PO token..." + Style.RESET_ALL)
+                        time.sleep(1)
+                        continue
+
             retriable = any(key in err_text for key in (
                 "Got error:", "read,", "Read timed out", "retry", "HTTP Error 5",
             ))
@@ -1847,11 +2007,12 @@ def download_hls_fragments(m3u8_url, output_path, output_name, cookie_file_path=
         for idx in range(1, len(fragment_urls) + 1):
             f.write(f"file '{temp_folder / f'frag_{idx:04d}.ts'}'\n")
     final_file = Path(output_path) / f"{output_name}.mp4"
+    ffmpeg_bin = str(detect_ffmpeg_path() or "ffmpeg")
     ffmpeg_cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", str(concat_file),
-        "-c", "copy", str(final_file)
-    ]
+         ffmpeg_bin, "-y", "-f", "concat", "-safe", "0",
+         "-i", str(concat_file),
+         "-c", "copy", str(final_file)
+     ]
     print(Fore.YELLOW + "Объединение фрагментов..." + Style.RESET_ALL)
     try:
         subprocess.run(ffmpeg_cmd, check=True)
@@ -2126,7 +2287,8 @@ def mux_mkv_with_subs_and_chapters(
         return False
 
     # Формируем список входных файлов для ffmpeg корректно (без лишних кавычек)
-    ffmpeg_cmd = ['ffmpeg', '-y', '-loglevel', 'error']
+    ffmpeg_bin = str(detect_ffmpeg_path() or "ffmpeg")
+    ffmpeg_cmd = [ffmpeg_bin, '-y', '-loglevel', 'error']
     input_paths = []
 
     # основной входной файл (видео или уже собранный yt-dlp mkv/mp4)
@@ -2555,6 +2717,9 @@ def process_playlists(playlists, output_path, auto_mode, platform, args, cookie_
                 print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
                 try:
                     entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
+                    # --- Определяем наличие глав для корректной передачи в ask_output_format ---
+                    chapters = entry_info.get("chapters")
+                    has_chapters = isinstance(chapters, list) and len(chapters) > 0
                 except DownloadError as e:
                     if is_video_unavailable_error(e):
                         print(Fore.YELLOW + f"Видео {first_idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2742,6 +2907,9 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                         print(Fore.YELLOW + f"\n=== Видео {first_idx} из плейлиста '{pl_title}' (выбор параметров) ===" + Style.RESET_ALL)
                         try:
                             entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
+                            # --- Определяем наличие глав для корректной передачи в ask_output_format ---
+                            chapters = entry_info.get("chapters")
+                            has_chapters = isinstance(chapters, list) and len(chapters) > 0
                         except DownloadError as e:
                             if is_video_unavailable_error(e):
                                 print(Fore.YELLOW + f"Видео {first_idx} ещё недоступно (премьера/скрыто/удалено). Пропуск." + Style.RESET_ALL)
@@ -2813,6 +2981,9 @@ def collect_user_choices_for_playlists(playlists, output_path, auto_mode, platfo
                             continue
                         print(Fore.YELLOW + f"\n=== Видео {idx} из плейлиста '{pl_title}' ===" + Style.RESET_ALL)
                         entry_info = safe_get_video_info(entry_url, platform, cookie_file_to_use)
+                        # --- Определяем наличие глав для корректной передачи в ask_output_format ---
+                        chapters = entry_info.get("chapters")
+                        has_chapters = isinstance(chapters, list) and len(chapters) > 0
                         video_id, audio_id, desired_ext, video_ext, audio_ext, video_codec, audio_codec = choose_format(entry_info['formats'])
                         subtitle_download_options = ask_and_select_subtitles(entry_info)
                         output_format = ask_output_format(
