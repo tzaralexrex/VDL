@@ -72,23 +72,292 @@ CHECK_VER = 1  # Проверять версии зависимостей (1) и
 YTDLP_PO_TOKEN_ENV = "YTDLP_PO_TOKEN"
 YTDLP_ALLOW_MISSING_POT_ENV = "YTDLP_ALLOW_MISSING_POT"
 
+## --- Универсальный импорт и автообновление внешних модулей ---
+## Используется для автоматической установки и обновления зависимостей
+def import_or_update(module_name, pypi_name=None, min_version=None, force_check=False):
+    """
+    Импортирует модуль, при необходимости устанавливает или обновляет его через pip.
+    Улучшения: локальное разрешение requests, защита pip-вызовов.
+    """
+    pypi_name = pypi_name or module_name
+
+    # Если не требуется проверка версии — просто импортируем модуль
+    if not CHECK_VER and not force_check:
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            log_debug(f"import_or_update: ImportError: {module_name} ({pypi_name}) не найден")
+            print(f"\n[!] Необходимый модуль {pypi_name} не установлен. Установите его вручную командой:\n    pip install {pypi_name}\nРабота невозможна.")
+            sys.exit(1)
+
+    print(f"Проверяю наличие и актуальность модуля {pypi_name}", end='', flush=True)
+    try:
+        module = importlib.import_module(module_name)
+        # Попытка получить информацию о последней версии — локально резолвим requests
+        latest = None
+        try:
+            _requests = importlib.import_module('requests')
+        except Exception:
+            _requests = None
+
+        if _requests is not None:
+            try:
+                resp = _requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
+                if resp.ok:
+                    latest = resp.json().get('info', {}).get('version')
+            except Exception as _req_err:
+                log_debug(f"import_or_update: requests->PyPI failed: {_req_err}")
+
+        if not latest:
+            try:
+                import urllib.request, json
+                with urllib.request.urlopen(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5) as u:
+                    info_json = json.load(u)
+                    latest = info_json.get('info', {}).get('version')
+            except Exception as _url_err:
+                log_debug(f"import_or_update: urllib->PyPI failed: {_url_err}")
+
+        if latest:
+            try:
+                installed = None
+                try:
+                    installed = get_version(pypi_name)
+                except Exception:
+                    installed = getattr(module, '__version__', None)
+                if installed and parse_version(installed) < parse_version(latest):
+                    print()
+                    print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
+                    log_debug(f"import_or_update: обновление {pypi_name}: {installed} → {latest}")
+                    try:
+                        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
+                        module = importlib.reload(module)
+                    except Exception as pip_e:
+                        log_debug(f"import_or_update: pip upgrade failed: {pip_e}")
+            except Exception as e:
+                log_debug(f"import_or_update: версия/обновление check failed: {e}")
+        print(" - OK")
+        # min_version check
+        if min_version:
+            try:
+                installed = None
+                try:
+                    installed = get_version(pypi_name)
+                except Exception:
+                    installed = getattr(module, '__version__', None)
+                if installed and parse_version(installed) < parse_version(min_version):
+                    print()
+                    print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
+                    log_debug(f"import_or_update: обновление до min_version {min_version}")
+                    try:
+                        subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
+                        module = importlib.reload(module)
+                    except Exception as pip_e:
+                        log_debug(f"import_or_update: pip install >=min_version failed: {pip_e}")
+            except Exception as e:
+                log_debug(f"import_or_update: min_version check failed: {e}")
+        return module
+    except ImportError:
+        log_debug(f"import_or_update: {module_name} not installed, attempting pip install {pypi_name}")
+        print(f"[!] {pypi_name} не установлен. Устанавливаем...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pypi_name])
+            return importlib.import_module(module_name)
+        except Exception as e:
+            log_debug(f"import_or_update: pip install failed: {e}")
+            print(f"[!] Не удалось автоматически установить {pypi_name}: {e}")
+            raise
+
 # --- Временный (сессионный) хардкод PO token ---
-# Вставьте сюда ваш токен только для локальной сессии. НЕ коммитить в репозиторий!
-# Пример: "web.gvs+XXXXX"
-# Если переменная окружения уже задана, она имеет приоритет.
-try:
-    _env_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
-    if not _env_token:
-        # Раскомментируйте и подставьте ваш токен для текущего запуска:
-        # _hardcoded = "web.gvs+XXXXX"
-        _hardcoded = None
-        if _hardcoded:
-            os.environ[YTDLP_PO_TOKEN_ENV] = _hardcoded
-            log_debug("YTDLP PO token установлен из хардкода (в памяти, не в репозитории).")
-    else:
-        log_debug("YTDLP PO token найден в окружении.")
-except Exception as _:
-    log_debug("Не удалось установить временный PO token из кода.")
+def _find_po_token_in_text(text: str) -> str | None:
+    """Ищем строку вида web.gvs+... в произвольном тексте/выводе."""
+    if not text:
+        return None
+    m = re.search(r'(web\.gvs\+[A-Za-z0-9_\-]+)', text)
+    return m.group(1) if m else None
+
+def _probe_http_provider(base_url: str, timeout: int = 3) -> str | None:
+    """Пробуем получить токен от локального HTTP-провайдера (Docker/Node server)."""
+    try:
+        if not requests:
+            log_debug("_probe_http_provider: requests не доступен, пропуск HTTP probe")
+            return None
+        probe_paths = ["/generate", "/pot", "/token", "/"]
+        for p in probe_paths:
+            url = base_url.rstrip("/") + p
+            try:
+                log_debug(f"_probe_http_provider: GET {url}")
+                resp = requests.get(url, timeout=timeout)
+                if resp.ok and resp.text:
+                    token = _find_po_token_in_text(resp.text)
+                    if token:
+                        log_debug(f"_probe_http_provider: найден token в {url}")
+                        return token
+            except Exception as e:
+                log_debug(f"_probe_http_provider: {url} -> {e}")
+                continue
+    except Exception as e:
+        log_debug(f"_probe_http_provider: исключение -> {e}")
+    return None
+
+def _try_run_node_script(script_path: Path, timeout: int = 30) -> str | None:
+    """Запустить локальный node-скрипт generate_once.js и извлечь токен из вывода."""
+    node_cmd = os.environ.get("BGUTIL_NODE_CMD", "node")
+    try:
+        if not script_path.exists():
+            log_debug(f"_try_run_node_script: script not found: {script_path}")
+            return None
+        log_debug(f"_try_run_node_script: запуск {node_cmd} {script_path}")
+        proc = subprocess.run([node_cmd, str(script_path)], capture_output=True, text=True, timeout=timeout)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        return _find_po_token_in_text(out)
+    except FileNotFoundError:
+        log_debug("_try_run_node_script: node не найден в PATH")
+    except subprocess.TimeoutExpired:
+        log_debug(f"_try_run_node_script: таймаут при запуске {script_path}")
+    except Exception as e:
+        log_debug(f"_try_run_node_script: ошибка -> {e}")
+    return None
+
+def _try_auto_start_docker(image: str, name: str, port: int = 4416, timeout: int = 20) -> bool:
+    """
+    Попытка запустить Docker-контейнер провайдера автоматически.
+    Возвращает True, если контейнер успешно запущен (или уже был запущен).
+    Пользователь подтверждает действие через input(), если BGUTIL_NO_PROMPT != "1".
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        log_debug("_try_auto_start_docker: docker не найден")
+        return False
+
+    no_prompt = os.environ.get("BGUTIL_NO_PROMPT", "") == "1"
+    if not no_prompt:
+        prompt = ("Скрипт может автоматически запустить Docker-контейнер bgutil-ytdlp-pot-provider\n"
+                  f"(образ: {image}, порт: {port}). Для этого требуется установленный Docker.\n"
+                  "Разрешить авто-запуск контейнера? (1 — да, Enter/0 — нет): ")
+        try:
+            ans = input(Fore.CYAN + prompt + Style.RESET_ALL).strip()
+            if ans != "1":
+                log_debug("_try_auto_start_docker: пользователь отказался от запуска docker")
+                return False
+        except Exception:
+            log_debug("_try_auto_start_docker: input failed, пропускаем запуск docker")
+            return False
+
+    name_env = name or os.environ.get("BGUTIL_DOCKER_NAME", "bgutil-provider-for-vdl")
+    image_env = image or os.environ.get("BGUTIL_DOCKER_IMAGE", "brainicism/bgutil-ytdlp-pot-provider:latest")
+    try:
+        # Удаляем существующий контейнер с таким именем, если есть (force)
+        subprocess.run([docker, "rm", "-f", name_env], capture_output=True, text=True, timeout=10)
+    except Exception as _:
+        pass
+    try:
+        cmd = [docker, "run", "--name", name_env, "-d", "-p", f"{port}:{port}", "--init", image_env]
+        log_debug(f"_try_auto_start_docker: running: {' '.join(cmd)}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode == 0:
+            log_debug("_try_auto_start_docker: docker run OK")
+            # даём короткую паузу, чтобы сервис поднялся
+            time.sleep(2)
+            return True
+        else:
+            log_debug(f"_try_auto_start_docker: docker run failed: {proc.returncode} / {proc.stdout} / {proc.stderr}")
+    except Exception as e:
+        log_debug(f"_try_auto_start_docker: exception -> {e}")
+    return False
+
+def retrieve_po_token_auto(timeout:int = 30) -> str | None:
+    """
+    Попытки автоматически получить PO token в порядке:
+      1) уже в окружении (YTDLP_PO_TOKEN)
+      2) HTTP probe на BGUTIL_PROVIDER_BASE_URL (по умолчанию http://127.0.0.1:4416)
+      3) если Docker доступен — попытаться запустить образ и снова probe
+      4) поиск локально скомпилированного скрипта (BGUTIL_SCRIPT_PATH или стандартные ~/bgutil-ytdlp-pot-provider/...)
+      5) при указании BGUTIL_SCRIPT_URL — скачать во временную директорию и запустить (по согласию)
+    Управление через env:
+      BGUTIL_NO_PROMPT=1 — без подтверждений,
+      BGUTIL_PROVIDER_BASE_URL, BGUTIL_SCRIPT_PATH, BGUTIL_SCRIPT_URL, BGUTIL_DOCKER_IMAGE, BGUTIL_DOCKER_NAME
+    """
+    try:
+        # 0) уже задан
+        env_tok = os.environ.get(YTDLP_PO_TOKEN_ENV)
+        if env_tok:
+            log_debug("retrieve_po_token_auto: token уже в окружении")
+            return env_tok
+
+        # 1) HTTP probe
+        base = os.environ.get("BGUTIL_PROVIDER_BASE_URL", "http://127.0.0.1:4416")
+        token = _probe_http_provider(base, timeout=3)
+        if token:
+            os.environ[YTDLP_PO_TOKEN_ENV] = token
+            return token
+
+        # 2) попытка автозапуска Docker (если есть)
+        if shutil.which("docker"):
+            image = os.environ.get("BGUTIL_DOCKER_IMAGE", "brainicism/bgutil-ytdlp-pot-provider:latest")
+            name = os.environ.get("BGUTIL_DOCKER_NAME", "bgutil-provider-for-vdl")
+            started = _try_auto_start_docker(image, name, port=int(os.environ.get("BGUTIL_DOCKER_PORT", "4416")), timeout=20)
+            if started:
+                # пробуем probe несколько раз с паузой
+                for _ in range(6):
+                    token = _probe_http_provider(base, timeout=3)
+                    if token:
+                        os.environ[YTDLP_PO_TOKEN_ENV] = token
+                        return token
+                    time.sleep(1)
+
+        # 3) поиск локального node-скрипта
+        home = Path.home()
+        candidates = []
+        if os.environ.get("BGUTIL_SCRIPT_PATH"):
+            candidates.append(Path(os.environ.get("BGUTIL_SCRIPT_PATH")))
+        candidates += [
+            home / "bgutil-ytdlp-pot-provider" / "server" / "build" / "generate_once.js",
+            home / "bgutil-ytdlp-pot-provider" / "server" / "build" / "generate.js",
+            Path.cwd() / "bgutil-ytdlp-pot-provider" / "server" / "build" / "generate_once.js",
+        ]
+        for c in candidates:
+            try:
+                if c and c.exists():
+                    token = _try_run_node_script(c, timeout=timeout)
+                    if token:
+                        os.environ[YTDLP_PO_TOKEN_ENV] = token
+                        return token
+            except Exception as e:
+                log_debug(f"retrieve_po_token_auto: local script {c} -> {e}")
+                continue
+
+        # 4) скачивание скрипта по URL (если задан BGUTIL_SCRIPT_URL)
+        script_url = os.environ.get("BGUTIL_SCRIPT_URL")
+        node_cmd = shutil.which(os.environ.get("BGUTIL_NODE_CMD", "node"))
+        if script_url and node_cmd:
+            no_prompt = os.environ.get("BGUTIL_NO_PROMPT", "") == "1"
+            try:
+                allow = no_prompt or (input(Fore.CYAN + f"Скачать и запустить bgutil-скрипт из {script_url}? (1 — да, Enter/0 — нет): " + Style.RESET_ALL).strip() == "1")
+            except Exception:
+                allow = False
+            if allow:
+                try:
+                    import tempfile, urllib.request
+                    tmpd = Path(tempfile.mkdtemp(prefix="bgutil_"))
+                    dst = tmpd / "generate_once.js"
+                    log_debug(f"retrieve_po_token_auto: скачиваем {script_url} -> {dst}")
+                    urllib.request.urlretrieve(script_url, str(dst))
+                    token = _try_run_node_script(dst, timeout=timeout)
+                    if token:
+                        os.environ[YTDLP_PO_TOKEN_ENV] = token
+                        return token
+                except Exception as e:
+                    log_debug(f"retrieve_po_token_auto: download/run script failed -> {e}")
+
+        log_debug("retrieve_po_token_auto: не удалось получить PO token автоматически")
+        return None
+    except Exception as e:
+        log_debug(f"retrieve_po_token_auto: исключение -> {e}")
+        return None
+
+# NOTE: Вызов retrieve_po_token_auto отложен вниз, после импортов и инициализации colorama.
+# Здесь лишь оставляем заглушку, чтобы не выполнять сетевые/IO операции во время определения модуля.
+# retrieve_po_token_auto будет вызываться ниже, после init(autoreset=True).
 
 # Поведение по умолчанию (без внешних переменных)
 # YTDLP_ALLOW_MISSING_POT_DEFAULT — если True, будет по умолчанию включён missing_pot (НЕ РЕКОМЕНДУЕТСЯ для общей публики)
@@ -216,95 +485,6 @@ except Exception:
         return tuple(int(x) for x in nums) if nums else (0,)
 from glob import glob
 
-## --- Универсальный импорт и автообновление внешних модулей ---
-## Используется для автоматической установки и обновления зависимостей
-def import_or_update(module_name, pypi_name=None, min_version=None, force_check=False):
-    """
-    Импортирует модуль, при необходимости устанавливает или обновляет его до актуальной версии с PyPI.
-    Поддержка: Windows, MacOS, Linux.
-    :param module_name: имя для importlib.import_module
-    :param pypi_name: имя пакета на PyPI (если отличается)
-    :param min_version: минимальная версия (опционально)
-    :param force_check: принудительно проверять версии даже если CHECK_VER=0
-    :return: импортированный модуль
-    """
-
-    # Определяем имя пакета для PyPI, если оно отличается от имени модуля
-    pypi_name = pypi_name or module_name
-
-    # Если не требуется проверка версии — просто импортируем модуль
-    if not CHECK_VER and not force_check:
-        try:
-            # Модуль не найден — выводим инструкцию для пользователя и завершаем работу
-            return importlib.import_module(module_name)
-        except ImportError:
-            # --- Модуль не найден — выводим инструкцию для пользователя и завершаем работу ---
-            log_debug(f"import_or_update: ImportError: {module_name} ({pypi_name}) не найден")
-            print(f"\n[!] Необходимый модуль {pypi_name} не установлен. Установите его вручную командой:\n    pip install {pypi_name}\nРабота невозможна.")
-            sys.exit(1)
-
-    # Полная проверка: наличие, версия, обновление
-    print(f"Проверяю наличие и актуальность модуля {pypi_name}", end='', flush=True)
-    try:
-        # Импортируем модуль
-        module = importlib.import_module(module_name)
-        # Проверяем актуальность версии через запрос к PyPI
-        try:
-            latest = None
-            # Попытка через requests (если он доступен)
-            if requests is not None:
-                try:
-                    resp = requests.get(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5)
-                    if resp.ok:
-                        latest = resp.json().get('info', {}).get('version')
-                except Exception as _req_err:
-                    log_debug(f"import_or_update: requests запрос к PyPI не удался: {_req_err}")
-            # Фоллбек на urllib, если requests недоступен или упал
-            if not latest:
-                try:
-                    import urllib.request, json
-                    with urllib.request.urlopen(f"https://pypi.org/pypi/{pypi_name}/json", timeout=5) as u:
-                        data = u.read()
-                        info_json = json.loads(data)
-                        latest = info_json.get('info', {}).get('version')
-                except Exception as _url_err:
-                    log_debug(f"import_or_update: urllib запрос к PyPI не удался: {_url_err}")
-            if latest:
-                try:
-                    installed = get_version(pypi_name)
-                except PackageNotFoundError:
-                    installed = getattr(module, '__version__', None)
-                if installed and parse_version(installed) < parse_version(latest):
-                    print()
-                    print(f"[!] Доступна новая версия {pypi_name}: {installed} → {latest}. Обновляем...", end='', flush=True)
-                    log_debug(f"import_or_update: обновление {pypi_name}: {installed} → {latest}")
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", pypi_name])
-                    module = importlib.reload(module)
-            print(" - OK")
-        except Exception as e:
-            # --- Ошибка при проверке или обновлении — выводим причину, но не прерываем работу ---
-            log_debug(f"import_or_update: ошибка проверки/обновления {pypi_name}: {e}")
-            print(f"[!] Не удалось проверить или обновить {pypi_name}: {e}")
-        # Проверяем минимально требуемую версию, если указана
-        if min_version:
-            try:
-                installed = get_version(pypi_name)
-            except PackageNotFoundError:
-                installed = getattr(module, '__version__', None)
-            if installed and parse_version(installed) < parse_version(min_version):
-                print()
-                print(f"[!] Требуется версия {min_version} для {pypi_name}, обновляем...")
-                log_debug(f"import_or_update: обновление до min_version {min_version}")
-                subprocess.check_call([sys.executable, "-m", "pip", "install", f"{pypi_name}>={min_version}"])
-                module = importlib.reload(module)
-        return module
-    except ImportError:
-        # --- Модуль не установлен — пробуем установить через pip ---
-        log_debug(f"import_or_update: ImportError: {module_name} ({pypi_name}) не установлен, пробуем установить через pip")
-        print(f"[!] {pypi_name} не установлен. Устанавливаем...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pypi_name])
-        return importlib.import_module(module_name)
-
 # --- Импорт сторонних модулей с автоматической установкой/обновлением ---
 yt_dlp = import_or_update('yt_dlp', force_check=True)
 
@@ -323,6 +503,74 @@ browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
+# Проверим заранее, был ли пакет bgutil-ytdlp-pot-provider установлен до запуска.
+# Если не был — пометим, чтобы после init() попытаться получить PO token сразу.
+_bgutil_pkg = "bgutil-ytdlp-pot-provider"
+try:
+    try:
+        # get_version ожидает pypi имя пакета
+        get_version(_bgutil_pkg)
+        _bgutil_was_missing = False
+    except PackageNotFoundError:
+        _bgutil_was_missing = True
+    except Exception:
+        _bgutil_was_missing = False
+except Exception:
+    _bgutil_was_missing = False
+
+# Пытаемся импортировать/установить плагин ненавязчиво (без проверки версий PyPI),
+# не ломая старт, если установка не удалась.
+bgutil_ytdlp_pot_provider = None
+
+def _try_import_bgutil_candidates(dist_name: str, preferred_module: str | None = None):
+    """
+    Попытка импортировать провайдер по набору распространённых имён:
+    - preferred_module (если задан),
+    - dist_name с '-' -> '_',
+    - dist_name без '-',
+    - дополнительные простые перестановки.
+    Возвращает модуль при успехе или None.
+    """
+    candidates = []
+    if preferred_module:
+        candidates.append(preferred_module)
+    # варианты на основе pypi-имени
+    candidates.append(dist_name.replace('-', '_'))
+    candidates.append(dist_name.replace('-', ''))
+    # дополнительные перестановки (на всякий случай)
+    if preferred_module:
+        candidates.append(preferred_module.replace('-', '_'))
+        candidates.append(preferred_module.replace('-', ''))
+    seen = set()
+    for mod in candidates:
+        if not mod or mod in seen:
+            continue
+        seen.add(mod)
+        try:
+            log_debug(f"_try_import_bgutil_candidates: попытка импортировать {mod}")
+            return importlib.import_module(mod)
+        except Exception as e:
+            log_debug(f"_try_import_bgutil_candidates: импорт {mod} не удался: {e}")
+    return None
+
+try:
+    bgutil_ytdlp_pot_provider = _try_import_bgutil_candidates(_bgutil_pkg, 'bgutil_ytdlp_pot_provider')
+    if not bgutil_ytdlp_pot_provider:
+        # Попытка установить через pip (без force-check) и повторный импорт
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", _bgutil_pkg])
+            log_debug(f"pip install {_bgutil_pkg} выполнен (startup attempt).")
+        except Exception as pip_e:
+            log_debug(f"pip install для {_bgutil_pkg} не удался: {pip_e}")
+            raise
+        # после установки — снова пробуем импорт по кандидатам
+        bgutil_ytdlp_pot_provider = _try_import_bgutil_candidates(_bgutil_pkg, 'bgutil_ytdlp_pot_provider')
+
+    if not bgutil_ytdlp_pot_provider:
+        raise ImportError(f"No module named provider for {_bgutil_pkg}")
+except Exception as e:
+    log_debug(f"Не удалось импортировать/установить {_bgutil_pkg} при старте: {e}")
+    bgutil_ytdlp_pot_provider = None
 
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
@@ -336,6 +584,24 @@ except ImportError:
     filedialog = None
 
 init(autoreset=True)  # Инициализация colorama и автоматический сброс цвета после каждого print
+
+# --- Попытка безопасно автоматически получить PO token (вызов только после инициализации зависимостей) ---
+try:
+    _env_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
+    if not _env_token:
+        # Если пакет bgutil только что был установлен при старте — логируем это и делаем попытку получить токен.
+        if globals().get('_bgutil_was_missing'):
+            log_debug("bgutil-ytdlp-pot-provider был установлен при старте — пробуем получить PO token сразу.")
+            print(Fore.YELLOW + "bgutil-плагин установлен — пытаемся автоматически получить PO token..." + Style.RESET_ALL)
+        _token = retrieve_po_token_auto()
+        if _token:
+            log_debug("YTDLP PO token установлен автоматически (retrieve_po_token_auto).")
+            print(Fore.GREEN + "Автоматически получен PO token." + Style.RESET_ALL)
+        else:
+            # Не найдено — оставляем возможность хардкода/фоллбеков позже
+            log_debug("Автоматическое получение PO token не удалось.")
+except Exception as _:
+    log_debug("Не удалось выполнить автоматическую установку PO token после инициализации зависимостей.")
 
 def check_url_exists(url):
     """
@@ -1718,7 +1984,7 @@ def download_video(
                 current_xa = ydl_opts.get('extractor_args') or {}
                 # Если уже пробовали по-умолчанию — не повторяем бесконечно
                 if not current_xa.get('youtube'):
-                    # Приоритет: po_token из окружения (если есть) — используем сразу
+                    # 0) Если есть PO token в окружении — просто использовать его
                     if po_token:
                         ydl_opts['extractor_args'] = {'youtube': {'po_token': po_token}}
                         log_debug("DownloadError: обнаружен SABR/PO-token сигнал — пробуем повтор с po_token из окружения.")
@@ -1726,7 +1992,10 @@ def download_video(
                         time.sleep(1)
                         continue
 
-                    # Если заранее разрешён missing_pot через env/code — применяем его немедленно
+                    # 1) Плагин bgutil уже проверён при старте — не пытаемся автоустанавливать его здесь.
+                    log_debug("DownloadError: SABR detected — bgutil plugin installation is handled at startup; skipping in-place install.")
+
+                    # 2) Если заранее разрешён missing_pot через env/code — применяем его немедленно
                     if allow_missing_pot:
                         ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
                         ydl_opts['_tried_missing_pot'] = True
@@ -1735,7 +2004,7 @@ def download_video(
                         time.sleep(1)
                         continue
 
-                    # Автоматическая одноразовая попытка (без env) — если включено поведение fallback
+                    # 3) Автоматическая одноразовая попытка (без env) — если включено поведение fallback
                     if AUTO_TRY_MISSING_POT_AS_FALLBACK and not ydl_opts.get('_tried_missing_pot'):
                         ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
                         ydl_opts['_tried_missing_pot'] = True
@@ -1744,7 +2013,7 @@ def download_video(
                         time.sleep(1)
                         continue
 
-                    # Иначе — интерактивный запрос (если нужно)
+                    # 4) Наконец — интерактивный ввод от пользователя (старое поведение)
                     try:
                         ans = input(Fore.CYAN + "yt-dlp сообщил о SABR/PO-token проблеме. Ввести PO token сейчас (или 'missing' для formats=missing_pot), Enter — пропустить: " + Style.RESET_ALL).strip()
                     except Exception:
