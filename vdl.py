@@ -270,12 +270,9 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
     Попытки автоматически получить PO token в порядке:
       1) уже в окружении (YTDLP_PO_TOKEN)
       2) HTTP probe на BGUTIL_PROVIDER_BASE_URL (по умолчанию http://127.0.0.1:4416)
-      3) если Docker доступен — попытаться запустить образ и снова probe
-      4) поиск локально скомпилированного скрипта (BGUTIL_SCRIPT_PATH или стандартные ~/bgutil-ytdlp-pot-provider/...)
-      5) при указании BGUTIL_SCRIPT_URL — скачать во временную директорию и запустить (по согласию)
-    Управление через env:
-      BGUTIL_NO_PROMPT=1 — без подтверждений,
-      BGUTIL_PROVIDER_BASE_URL, BGUTIL_SCRIPT_PATH, BGUTIL_SCRIPT_URL, BGUTIL_DOCKER_IMAGE, BGUTIL_DOCKER_NAME
+      3) поиск локального node-скрипта
+      4) при наличии node — автоматически скачать официальный single-file скрипт и запустить его
+      5) fallback: автозапуск Docker (без запроса)
     """
     try:
         # 0) уже задан
@@ -291,21 +288,7 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
             os.environ[YTDLP_PO_TOKEN_ENV] = token
             return token
 
-        # 2) попытка автозапуска Docker (если есть)
-        if shutil.which("docker"):
-            image = os.environ.get("BGUTIL_DOCKER_IMAGE", "brainicism/bgutil-ytdlp-pot-provider:latest")
-            name = os.environ.get("BGUTIL_DOCKER_NAME", "bgutil-provider-for-vdl")
-            started = _try_auto_start_docker(image, name, port=int(os.environ.get("BGUTIL_DOCKER_PORT", "4416")), timeout=20)
-            if started:
-                # пробуем probe несколько раз с паузой
-                for _ in range(6):
-                    token = _probe_http_provider(base, timeout=3)
-                    if token:
-                        os.environ[YTDLP_PO_TOKEN_ENV] = token
-                        return token
-                    time.sleep(1)
-
-        # 3) поиск локального node-скрипта
+        # 2) поиск локального node-скрипта
         home = Path.home()
         candidates = []
         if os.environ.get("BGUTIL_SCRIPT_PATH"):
@@ -326,28 +309,60 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
                 log_debug(f"retrieve_po_token_auto: local script {c} -> {e}")
                 continue
 
-        # 4) скачивание скрипта по URL (если задан BGUTIL_SCRIPT_URL)
+        # 3) Если есть node — в приоритете автоматически скачать официальный single-file скрипт и запустить его
         script_url = os.environ.get("BGUTIL_SCRIPT_URL")
         node_cmd = shutil.which(os.environ.get("BGUTIL_NODE_CMD", "node"))
-        if script_url and node_cmd:
-            no_prompt = os.environ.get("BGUTIL_NO_PROMPT", "") == "1"
+        if node_cmd:
+            default_raw = "https://raw.githubusercontent.com/brainicism/bgutil-ytdlp-pot-provider/master/server/build/generate_once.js"
+            # Попытка 1: официальный raw
             try:
-                allow = no_prompt or (input(Fore.CYAN + f"Скачать и запустить bgutil-скрипт из {script_url}? (1 — да, Enter/0 — нет): " + Style.RESET_ALL).strip() == "1")
-            except Exception:
-                allow = False
-            if allow:
+                import tempfile, urllib.request
+                tmpd = Path(tempfile.mkdtemp(prefix="bgutil_"))
+                dst = tmpd / "generate_once.js"
+                log_debug(f"retrieve_po_token_auto: auto-download {default_raw} -> {dst}")
+                urllib.request.urlretrieve(default_raw, str(dst))
+                token = _try_run_node_script(dst, timeout=timeout)
+                if token:
+                    os.environ[YTDLP_PO_TOKEN_ENV] = token
+                    return token
+            except Exception as e:
+                log_debug(f"retrieve_po_token_auto: auto download/run default script failed -> {e}")
+            # Попытка 2: если указан script_url — скачать и запустить его тоже автоматически
+            if script_url:
                 try:
                     import tempfile, urllib.request
                     tmpd = Path(tempfile.mkdtemp(prefix="bgutil_"))
                     dst = tmpd / "generate_once.js"
-                    log_debug(f"retrieve_po_token_auto: скачиваем {script_url} -> {dst}")
+                    log_debug(f"retrieve_po_token_auto: auto-download {script_url} -> {dst}")
                     urllib.request.urlretrieve(script_url, str(dst))
                     token = _try_run_node_script(dst, timeout=timeout)
                     if token:
                         os.environ[YTDLP_PO_TOKEN_ENV] = token
                         return token
                 except Exception as e:
-                    log_debug(f"retrieve_po_token_auto: download/run script failed -> {e}")
+                    log_debug(f"retrieve_po_token_auto: auto download/run script_url failed -> {e}")
+
+        # 4) Если node не помог — попробовать автозапустить Docker (без запроса)
+        if shutil.which("docker"):
+            image = os.environ.get("BGUTIL_DOCKER_IMAGE", "brainicism/bgutil-ytdlp-pot-provider:latest")
+            name = os.environ.get("BGUTIL_DOCKER_NAME", "bgutil-provider-for-vdl")
+            # force no prompt for docker auto-start (temporarily set env)
+            prev_no_prompt = os.environ.get("BGUTIL_NO_PROMPT")
+            os.environ["BGUTIL_NO_PROMPT"] = "1"
+            try:
+                started = _try_auto_start_docker(image, name, port=int(os.environ.get("BGUTIL_DOCKER_PORT", "4416")), timeout=20)
+            finally:
+                if prev_no_prompt is None:
+                    os.environ.pop("BGUTIL_NO_PROMPT", None)
+                else:
+                    os.environ["BGUTIL_NO_PROMPT"] = prev_no_prompt
+            if started:
+                for _ in range(6):
+                    token = _probe_http_provider(base, timeout=3)
+                    if token:
+                        os.environ[YTDLP_PO_TOKEN_ENV] = token
+                        return token
+                    time.sleep(1)
 
         log_debug("retrieve_po_token_auto: не удалось получить PO token автоматически")
         return None
@@ -503,74 +518,81 @@ browser_cookie3 = import_or_update('browser_cookie3')
 colorama = import_or_update('colorama')
 psutil = import_or_update('psutil')
 ffmpeg = import_or_update('ffmpeg', 'ffmpeg-python')
+
 # Проверим заранее, был ли пакет bgutil-ytdlp-pot-provider установлен до запуска.
-# Если не был — пометим, чтобы после init() попытаться получить PO token сразу.
 _bgutil_pkg = "bgutil-ytdlp-pot-provider"
-try:
-    try:
-        # get_version ожидает pypi имя пакета
-        get_version(_bgutil_pkg)
-        _bgutil_was_missing = False
-    except PackageNotFoundError:
-        _bgutil_was_missing = True
-    except Exception:
-        _bgutil_was_missing = False
-except Exception:
-    _bgutil_was_missing = False
-
-# Пытаемся импортировать/установить плагин ненавязчиво (без проверки версий PyPI),
-# не ломая старт, если установка не удалась.
 bgutil_ytdlp_pot_provider = None
+_bgutil_was_missing = False
 
-def _try_import_bgutil_candidates(dist_name: str, preferred_module: str | None = None):
-    """
-    Попытка импортировать провайдер по набору распространённых имён:
-    - preferred_module (если задан),
-    - dist_name с '-' -> '_',
-    - dist_name без '-',
-    - дополнительные простые перестановки.
-    Возвращает модуль при успехе или None.
-    """
-    candidates = []
-    if preferred_module:
-        candidates.append(preferred_module)
-    # варианты на основе pypi-имени
-    candidates.append(dist_name.replace('-', '_'))
-    candidates.append(dist_name.replace('-', ''))
-    # дополнительные перестановки (на всякий случай)
-    if preferred_module:
-        candidates.append(preferred_module.replace('-', '_'))
-        candidates.append(preferred_module.replace('-', ''))
-    seen = set()
-    for mod in candidates:
-        if not mod or mod in seen:
-            continue
-        seen.add(mod)
-        try:
-            log_debug(f"_try_import_bgutil_candidates: попытка импортировать {mod}")
-            return importlib.import_module(mod)
-        except Exception as e:
-            log_debug(f"_try_import_bgutil_candidates: импорт {mod} не удался: {e}")
-    return None
+# Варианты имён, которые могут экспортироваться модулем (проверим локально сначала)
+_candidates = list(dict.fromkeys([
+    "bgutil_ytdlp_pot_provider",
+    "bgutilytdlppotprovider",
+    _bgutil_pkg.replace('-', '_'),
+    _bgutil_pkg.replace('-', ''),
+    # Дополнительные имена, которые реально могут быть установлены:
+    "yt_dlp_plugins",                             # пакет-плъгин, присутствует в выводе pip show -f
+    "yt_dlp_plugins.extractor.getpot_bgutil",     # прямой импорт подмодуля плъгина
+]))
 
-try:
-    bgutil_ytdlp_pot_provider = _try_import_bgutil_candidates(_bgutil_pkg, 'bgutil_ytdlp_pot_provider')
-    if not bgutil_ytdlp_pot_provider:
-        # Попытка установить через pip (без force-check) и повторный импорт
+# 1) Сначала пробуем импортировать все кандидаты локально (без pip)
+for cand in _candidates:
+    try:
+        bgutil_ytdlp_pot_provider = importlib.import_module(cand)
+        log_debug(f"Импорт провайдера успешен как '{cand}' (локально).")
+        break
+    except Exception:
+        continue
+
+# 2) Если ни один из вариантов не импортировался — делаем одну попытку установки/проверки,
+#    затем сканируем sys.path на предмет топ‑левел модулей, подходящих под пакет, и пробуем импортировать их.
+if not bgutil_ytdlp_pot_provider:
+    try:
+        log_debug(f"Модуль {_bgutil_pkg} не найден локально — пробуем установить (однократно) через pip.")
+        print(f"[!] {_bgutil_pkg} не установлен. Устанавливаем...")
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install", _bgutil_pkg])
-            log_debug(f"pip install {_bgutil_pkg} выполнен (startup attempt).")
-        except Exception as pip_e:
-            log_debug(f"pip install для {_bgutil_pkg} не удался: {pip_e}")
-            raise
-        # после установки — снова пробуем импорт по кандидатам
-        bgutil_ytdlp_pot_provider = _try_import_bgutil_candidates(_bgutil_pkg, 'bgutil_ytdlp_pot_provider')
+        except Exception as pip_err:
+            # pip мог завершиться с кодом 0, но здесь поймали ошибку — логируем и продолжаем попытки поиска модулей
+            log_debug(f"pip install {_bgutil_pkg} завершился с ошибкой: {pip_err}")
 
-    if not bgutil_ytdlp_pot_provider:
-        raise ImportError(f"No module named provider for {_bgutil_pkg}")
-except Exception as e:
-    log_debug(f"Не удалось импортировать/установить {_bgutil_pkg} при старте: {e}")
-    bgutil_ytdlp_pot_provider = None
+        # После установки — сканируем доступные top-level модули и пробуем импортировать подходящие имена.
+        import pkgutil
+        found_candidates = set(_candidates)  # начнём с заранее известных вариантов
+
+        # Ищем модули/пакеты в sys.path, фильтруя по ключевым словам
+        key_tokens = ("bgutil", "ytdlp", "pot", "provider", "brainicism")
+        for finder, name, ispkg in pkgutil.iter_modules():
+            lname = name.lower()
+            if any(tok in lname for tok in key_tokens):
+                found_candidates.add(name)
+
+        log_debug(f"Найденные кандидаты для импорта после установки: {sorted(found_candidates)}")
+
+        for cand in sorted(found_candidates):
+            try:
+                bgutil_ytdlp_pot_provider = importlib.import_module(cand)
+                _bgutil_was_missing = True
+                log_debug(f"Провайдер установлен/импортирован как '{cand}' после установки.")
+                break
+            except Exception as e:
+                log_debug(f"После установки не удалось импортировать '{cand}': {e}")
+                continue
+    except Exception as e:
+        log_debug(f"Не удалось установить/импортировать {_bgutil_pkg}: {e}")
+        bgutil_ytdlp_pot_provider = None
+
+if not bgutil_ytdlp_pot_provider:
+    # Если пакет установлен pip'ом, но мы всё ещё не нашли топ‑левел модуль — не пытаться снова при каждом старте.
+    log_debug(f"Не удалось импортировать/установить {_bgutil_pkg} при старте. Пакет может быть установлен под другим именем.")
+    # Показать краткую подсказку пользователю (без повторных pip вызовов)
+    _fore = globals().get('Fore')
+    _style = globals().get('Style')
+    prefix = _fore.YELLOW if _fore else ''
+    reset = _style.RESET_ALL if _style else ''
+    print(prefix + f"[!] Пакет {_bgutil_pkg} установлен, но его топ-левел модуль не найден автоматически.\n"
+          f"Если вы уверены, что пакет установлен, выполните вручную в Python: import <module_name>\n"
+          f"и укажите корректное имя модуля в скрипте (переменная _candidates)." + reset)
 
 from yt_dlp.utils import DownloadError
 from browser_cookie3 import BrowserCookieError
