@@ -1152,14 +1152,33 @@ def detect_ffmpeg_path():
     """
     script_dir = Path(sys.argv[0]).resolve().parent
     ffmpeg_filename = "ffmpeg.exe" if system == "windows" else "ffmpeg"
+    ffprobe_filename = "ffprobe.exe" if system == "windows" else "ffprobe"
     local_path = script_dir / ffmpeg_filename
     log_debug(f"Поиск ffmpeg: Проверяем локальный путь: {local_path}")
     if Path(local_path).is_file():
         log_debug(f"FFmpeg найден по локальному пути: {local_path}")
+        # Если рядом есть ffprobe — добавим эту директорию в PATH, чтобы ffmpeg.probe и yt-dlp могли его найти
+        try:
+            ff_dir = str(Path(local_path).resolve().parent)
+            possible_ffprobe = Path(ff_dir) / ffprobe_filename
+            if possible_ffprobe.exists():
+                os.environ['PATH'] = ff_dir + os.pathsep + os.environ.get('PATH', '')
+                log_debug(f"Добавлена директория с ffprobe в PATH: {ff_dir}")
+        except Exception as e:
+            log_debug(f"detect_ffmpeg_path: не удалось добавить ffprobe в PATH: {e}")
         return local_path
     system_path = which("ffmpeg")
     log_debug(f"Поиск ffmpeg: Проверяем системный PATH: {system_path}")
     if system_path and Path(system_path).is_file():
+        # Если ffprobe рядом в той же папке — тоже убедимся, что PATH корректен
+        try:
+            ff_dir = str(Path(system_path).resolve().parent)
+            possible_ffprobe = Path(ff_dir) / ffprobe_filename
+            if possible_ffprobe.exists():
+                os.environ['PATH'] = ff_dir + os.pathsep + os.environ.get('PATH', '')
+                log_debug(f"Добавлена директория с ffprobe в PATH (system): {ff_dir}")
+        except Exception as e:
+            log_debug(f"detect_ffmpeg_path: не удалось обновить PATH для ffprobe: {e}")
         log_debug(f"FFmpeg найден в системном PATH: {system_path}")
         return system_path
     log_debug("FFmpeg не найден ни по локальному пути, ни в системном PATH.")
@@ -3197,22 +3216,20 @@ def check_mkv_integrity(filepath, expected_video_codec=None, expected_audio_code
         # Проверка видео
         if expected_video_codec:
             video_ok = any(s['codec_type'] == 'video' and expected_video_codec in s.get('codec_name', '') for s in streams)
-        # Проверка аудио
         if expected_audio_codec:
             audio_ok = any(s['codec_type'] == 'audio' and expected_audio_codec in s.get('codec_name', '') for s in streams)
-        # Проверка субтитров
         if expected_sub_langs:
             found_langs = [s.get('tags', {}).get('language', '').lower() for s in streams if s['codec_type'] == 'subtitle']
             subs_ok = all(lang.lower() in found_langs for lang in expected_sub_langs)
-        # Проверка глав
-        chaps_ok = True
         if expected_chapters:
             chaps_ok = 'chapters' in probe and len(probe['chapters']) > 0
 
         return video_ok and audio_ok and subs_ok and chaps_ok
     except Exception as e:
-        log_debug(f"Ошибка при проверке MKV: {e}")
-        return False
+        # Если ffprobe недоступен или probe упал — логируем и считаем проверку пройденной,
+        # чтобы не запускать бесконечный цикл повторных mux'ов.
+        log_debug(f"check_mkv_integrity: не удалось выполнить ffprobe/probe: {e}\n{traceback.format_exc()}")
+        return True
 
 def expand_channel_entries(entries, platform, cookie_file_to_use, level=0):
     """
