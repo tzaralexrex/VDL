@@ -983,7 +983,8 @@ def fallback_download(url):
         # Ищем <object data="...">
         object_datas = re.findall(r'<object[^>]+data=["\']([^"\']+)["\']', html, re.I)
         # Универсальный поиск прямых ссылок на потоки/файлы (.m3u8, .mpd, .mp4, .webm)
-        playlist_links = re.findall(r'https?://[^\s"\'<>]+?\.(m3u8|mpd|mp4|webm)', html)
+        # use non-capturing group so findall returns full URL strings, not only extension
+        playlist_links = re.findall(r'https?://[^\s"\'<>]+?\.(?:m3u8|mpd|mp4|webm)', html)
         if playlist_links:
             print(Fore.YELLOW + "\n[Fallback] Найдены прямые ссылки на потоки/файлы:" + Style.RESET_ALL)
             for idx, link in enumerate(playlist_links, 1):
@@ -991,8 +992,14 @@ def fallback_download(url):
             sel = input(Fore.CYAN + "Скачать этот поток? (1 — да, 0 — нет, Enter = 1): " + Style.RESET_ALL).strip()
             if sel in ("", "1"):
                 try:
-                    with yt_dlp.YoutubeDL({'outtmpl': '%(title)s.%(ext)s'}) as ydl:
-                        ydl.download([playlist_links[0]])
+                        # Передаём extractor_args для youtube (если нужно), чтобы yt-dlp не звонил провайдерам
+                        ydl_opts = {'outtmpl': '%(title)s.%(ext)s'}
+                        xa = build_extractor_args_for_youtube()
+                        if xa:
+                            ydl_opts['extractor_args'] = xa
+                            log_debug(f"fallback_download: перед запуском yt-dlp добавлены extractor_args: {xa}")
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([playlist_links[0]])
                 except Exception as e:
                     print(Fore.RED + f"Ошибка при скачивании потока: {e}" + Style.RESET_ALL)
             return
@@ -1082,8 +1089,15 @@ def fallback_download(url):
             for abs_link in valid_links:
                 try:
                     print(Fore.YELLOW + f"\nСкачивание: {abs_link}" + Style.RESET_ALL)
-                    with yt_dlp.YoutubeDL({'outtmpl': '%(title)s.%(ext)s'}) as ydl:
+                    # добавить extractor_args чтобы избежать лишних попыток провайдера (PO token probe)
+                    ydl_opts = {'outtmpl': '%(title)s.%(ext)s'}
+                    xa = build_extractor_args_for_youtube()
+                    if xa:
+                        ydl_opts['extractor_args'] = xa
+                        log_debug(f"fallback_download: перед запуском yt-dlp (valid_links) добавлены extractor_args: {xa}")
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([abs_link])
+
                 except Exception as e:
                     print(Fore.RED + f"Ошибка при скачивании {abs_link}: {e}" + Style.RESET_ALL)
                     log_debug(f"[Fallback] Ошибка при скачивании {abs_link}: {e}")
@@ -1105,11 +1119,8 @@ def fallback_download(url):
 def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
     """
     Проверяет, «жив» ли куки-файл по реальной ссылке (например, на видео).
-    Если test_url не задан, используется главная страница платформы.
-    Поддержка: Windows, MacOS, Linux.
     """
     if not test_url:
-        # Если не указана тестовая ссылка — используем главную страницу платформы
         test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
     try:
         opts = {
@@ -1120,6 +1131,11 @@ def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) 
         # extract_flat только для YouTube-плейлистов!
         if platform == "youtube":
             opts["extract_flat"] = True
+            # Добавляем extractor_args при необходимости (чтобы избежать автопроб провайдера)
+            xa = build_extractor_args_for_youtube()
+            if xa:
+                opts["extractor_args"] = xa
+                log_debug(f"cookie_file_is_valid: добавлены extractor_args для youtube: {xa}")
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(test_url, download=False)
         return True
@@ -1355,6 +1371,20 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
     """
     log_debug(f"get_video_info: Итоговая платформа: {platform}, URL: {url}")
     ydl_opts = {'quiet': True, 'skip_download': True}
+
+    # --- Добавляем extractor_args для YouTube на основании env (чтобы избежать лишних попыток провайдеров) ---
+    if platform == 'youtube':
+        po_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
+        allow_missing_pot_env = str(os.environ.get(YTDLP_ALLOW_MISSING_POT_ENV, "")).lower() in ("1", "true", "yes")
+        allow_missing_pot = allow_missing_pot_env or bool(YTDLP_ALLOW_MISSING_POT_DEFAULT)
+        if po_token:
+            # ВАЖНО: оборачиваем токен в список, чтобы yt-dlp не итерировал строку по символам
+            ydl_opts['extractor_args'] = {'youtube': {'po_token': [po_token]}}
+            log_debug("get_video_info: добавлены extractor_args с po_token из окружения")
+        elif allow_missing_pot:
+            ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+            log_debug("get_video_info: добавлены extractor_args formats=missing_pot (разрешено настройками)")
+
     if platform == "youtube" and ("list=" in url or "/playlist" in url):
         ydl_opts['extract_flat'] = True
     if cookie_file_path:
@@ -2114,6 +2144,24 @@ def phook(d, last_file_ref, subtitle_options=None, output_name=None, output_path
                         print(Fore.RED + f"Ошибка нормализации субтитров {fname}: {e}" + Style.RESET_ALL)
                         log_debug(f"Ошибка нормализации субтитров {fname}: {e}")
 
+# --- Вспомогательная функция: собрать extractor_args для YouTube на основании env ---
+def build_extractor_args_for_youtube():
+    """
+    Возвращает dict для ydl_opts['extractor_args'] с po_token (в списке) или formats=missing_pot.
+    Используется повсеместно перед созданием yt_dlp.YoutubeDL(...).
+    """
+    try:
+        po_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
+        allow_missing_pot_env = str(os.environ.get(YTDLP_ALLOW_MISSING_POT_ENV, "")).lower() in ("1", "true", "yes")
+        allow_missing_pot = allow_missing_pot_env or bool(YTDLP_ALLOW_MISSING_POT_DEFAULT)
+        if po_token:
+            return {'youtube': {'po_token': [po_token]}}
+        if allow_missing_pot:
+            return {'youtube': {'formats': 'missing_pot'}}
+    except Exception as e:
+        log_debug(f"build_extractor_args_for_youtube: error -> {e}")
+    return {}
+
 def download_video(
         url, video_id, audio_id,
         output_path, output_name,
@@ -2181,7 +2229,8 @@ def download_video(
     if platform == 'youtube':
         extractor_args = {}
         if po_token:
-            extractor_args['youtube'] = {'po_token': po_token}
+            # Оборачиваем токен в список — предотвращаем итерацию по символам внутри yt-dlp
+            extractor_args['youtube'] = {'po_token': [po_token]}
         elif allow_missing_pot:
             # Включаем небезопасный fallback — включает "missing_pot" форматы
             extractor_args['youtube'] = {'formats': 'missing_pot'}
@@ -2270,7 +2319,7 @@ def download_video(
                 if not current_xa.get('youtube'):
                     # 0) Если есть PO token в окружении — просто использовать его
                     if po_token:
-                        ydl_opts['extractor_args'] = {'youtube': {'po_token': po_token}}
+                        ydl_opts['extractor_args'] = {'youtube': {'po_token': [po_token]}}
                         log_debug("DownloadError: обнаружен SABR/PO-token сигнал — пробуем повтор с po_token из окружения.")
                         print(Fore.YELLOW + "Обнаружен SABR/PO-token сценарий. Повтор с PO token из окружения..." + Style.RESET_ALL)
                         time.sleep(1)
@@ -2310,7 +2359,7 @@ def download_video(
                         time.sleep(1)
                         continue
                     elif ans:
-                        ydl_opts['extractor_args'] = {'youtube': {'po_token': ans}}
+                        ydl_opts['extractor_args'] = {'youtube': {'po_token': [ans]}}
                         log_debug("Пользователь ввёл PO token вручную — повтор с ним.")
                         print(Fore.YELLOW + "Повтор с введённым PO token..." + Style.RESET_ALL)
                         time.sleep(1)
