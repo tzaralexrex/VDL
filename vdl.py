@@ -17,6 +17,7 @@ import platform
 import argparse
 import threading
 import shutil
+import json
 from pathlib import Path
 from datetime import datetime
 from shutil import which
@@ -71,6 +72,41 @@ CHECK_VER = 1  # Проверять версии зависимостей (1) и
 # Чтобы разрешить этот fallback — установить YTDLP_ALLOW_MISSING_POT=1 (env) или поменять дефолт ниже.
 YTDLP_PO_TOKEN_ENV = "YTDLP_PO_TOKEN"
 YTDLP_ALLOW_MISSING_POT_ENV = "YTDLP_ALLOW_MISSING_POT"
+
+# --- Параметры поведения bgutil / автополучения PO token ---
+# Значения по умолчанию (локальные константы скрипта).
+# По умолчанию скрипт работает "из коробки" — без требуемых внешних env vars.
+BGUTIL_PERSIST_TOKEN = False                                # при True — после автополучения выполнится setx на Windows
+BGUTIL_DOCKER_NAME = "bgutil-provider"                      # имя контейнера для поиска/exec
+BGUTIL_DOCKER_IMAGE = "brainicism/bgutil-ytdlp-pot-provider:latest"  # образ для авто-запуска
+BGUTIL_DOCKER_PORT = 4416
+BGUTIL_PROVIDER_BASE_URL = f"http://127.0.0.1:{BGUTIL_DOCKER_PORT}"
+BGUTIL_CONTAINER_SCRIPT_PATH = "/app/build/generate_once.js"  # путь внутри контейнера по умолчанию
+BGUTIL_NO_PROMPT = False                                     # если True — не спрашивать пользователя при автозапуске docker
+
+def _env_override(name: str, current, cast=lambda x: x):
+    """
+    Переопределить значение только если переменная окружения явно задана.
+    Это сохраняет поведение «скрипт сам по себе» и при этом даёт возможность
+    тонкой настройки через env при необходимости.
+    """
+    v = os.environ.get(name)
+    if v is None:
+        return current
+    try:
+        return cast(v)
+    except Exception:
+        return current
+
+# Разрешаем переопределение ТОЛЬКО при явном указании env (удобно для CI/advanced users)
+BGUTIL_PERSIST_TOKEN = _env_override("BGUTIL_PERSIST_TOKEN", BGUTIL_PERSIST_TOKEN,
+                                   lambda s: str(s).strip().lower() in ("1", "true", "yes"))
+BGUTIL_DOCKER_NAME = _env_override("BGUTIL_DOCKER_NAME", BGUTIL_DOCKER_NAME, str)
+BGUTIL_DOCKER_IMAGE = _env_override("BGUTIL_DOCKER_IMAGE", BGUTIL_DOCKER_IMAGE, str)
+BGUTIL_DOCKER_PORT = _env_override("BGUTIL_DOCKER_PORT", BGUTIL_DOCKER_PORT, lambda s: int(s))
+BGUTIL_PROVIDER_BASE_URL = _env_override("BGUTIL_PROVIDER_BASE_URL", BGUTIL_PROVIDER_BASE_URL, str)
+BGUTIL_CONTAINER_SCRIPT_PATH = _env_override("BGUTIL_CONTAINER_SCRIPT_PATH", BGUTIL_CONTAINER_SCRIPT_PATH, str)
+BGUTIL_NO_PROMPT = _env_override("BGUTIL_NO_PROMPT", BGUTIL_NO_PROMPT, lambda s: str(s).strip() == "1")
 
 ## --- Универсальный импорт и автообновление внешних модулей ---
 ## Используется для автоматической установки и обновления зависимостей
@@ -175,22 +211,51 @@ def _find_po_token_in_text(text: str) -> str | None:
     m = re.search(r'(web\.gvs\+[A-Za-z0-9_\-]+)', text)
     return m.group(1) if m else None
 
+def _mask_po_token(tok: str | None, head: int = 6, tail: int = 6) -> str:
+    """Возвращает безопасное представление токена: сохраняет префикс web.gvs+ целиком и первые/последние символы."""
+    if not tok:
+        return ""
+    s = str(tok)
+    # Если очень короткий — делаем компактную маску
+    if len(s) <= head + tail + 3:
+        return s[:max(1, head//2)] + "..." + s[-max(1, tail//2):]
+
+    # Особая обработка для токенов с префиксом web.gvs+
+    prefix = ""
+    if s.startswith("web.gvs+"):
+        prefix = "web.gvs+"
+        rest = s[len(prefix):]
+        # Если остальная часть короткая — вернуть почти весь токен
+        if len(rest) <= head + tail + 3:
+            return prefix + rest[:max(1, head//2)] + "..." + rest[-max(1, tail//2):]
+        return prefix + rest[:head] + "..." + s[-tail:]
+
+    # Общий случай
+    return s[:head] + "..." + s[-tail:]
+
 def _probe_http_provider(base_url: str, timeout: int = 3) -> str | None:
     """Пробуем получить токен от локального HTTP-провайдера (Docker/Node server)."""
     try:
         if not requests:
             log_debug("_probe_http_provider: requests не доступен, пропуск HTTP probe")
             return None
-        probe_paths = ["/generate", "/pot", "/token", "/"]
+        # расширенный набор путей и анализ тела ответа даже при 404/500
+        probe_paths = ["/generate", "/generate_once", "/pot", "/token", "/once", "/api/generate", "/"]
         for p in probe_paths:
             url = base_url.rstrip("/") + p
             try:
                 log_debug(f"_probe_http_provider: GET {url}")
                 resp = requests.get(url, timeout=timeout)
-                if resp.ok and resp.text:
-                    token = _find_po_token_in_text(resp.text)
+                body = resp.text if resp is not None else ""
+                if body:
+                    token = _find_po_token_in_text(body)
                     if token:
-                        log_debug(f"_probe_http_provider: найден token в {url}")
+                        masked = _mask_po_token(token)
+                        log_debug(f"_probe_http_provider: найден token в {url} -> {masked}")
+                        try:
+                            print(Fore.GREEN + f"PO token найден через HTTP-провайдера: {masked}" + Style.RESET_ALL)
+                        except Exception:
+                            pass
                         return token
             except Exception as e:
                 log_debug(f"_probe_http_provider: {url} -> {e}")
@@ -229,7 +294,8 @@ def _try_auto_start_docker(image: str, name: str, port: int = 4416, timeout: int
         log_debug("_try_auto_start_docker: docker не найден")
         return False
 
-    no_prompt = os.environ.get("BGUTIL_NO_PROMPT", "") == "1"
+    # Используем константу BGUTIL_NO_PROMPT (может быть переопределена через env ранее)
+    no_prompt = BGUTIL_NO_PROMPT
     if not no_prompt:
         prompt = ("Скрипт может автоматически запустить Docker-контейнер bgutil-ytdlp-pot-provider\n"
                   f"(образ: {image}, порт: {port}). Для этого требуется установленный Docker.\n"
@@ -265,30 +331,232 @@ def _try_auto_start_docker(image: str, name: str, port: int = 4416, timeout: int
         log_debug(f"_try_auto_start_docker: exception -> {e}")
     return False
 
+# --- Docker helper: search token in container logs ---
+def _probe_docker_logs(container_name: str, tail: int = 1000) -> str | None:
+    """Ищем PO token в логах запущенного контейнера Docker."""
+    docker = shutil.which("docker")
+    if not docker:
+        log_debug("_probe_docker_logs: docker не найден")
+        return None
+    try:
+        proc = subprocess.run([docker, "logs", "--tail", str(tail), container_name],
+                              capture_output=True, text=True, timeout=10)
+        logs = (proc.stdout or "") + (proc.stderr or "")
+        if not logs:
+            log_debug(f"_probe_docker_logs: логи пусты для {container_name}")
+            return None
+        # Ищем токен в явном виде
+        m = re.search(r'(web\.gvs\+[A-Za-z0-9_\-]+)', logs)
+        if m:
+            masked = _mask_po_token(m.group(1))
+            log_debug(f"_probe_docker_logs: найден токен в логах контейнера {container_name} -> {masked}")
+            try:
+                print(Fore.GREEN + f"PO token найден в логах контейнера: {masked}" + Style.RESET_ALL)
+            except Exception:
+                pass
+            return m.group(1)
+        # JSON-ответ может быть в логах — пытаемся извлечь poToken
+        m2 = re.search(r'["\']poToken["\']\s*:\s*["\']([^"\']+)["\']', logs)
+        if m2:
+            tok = m2.group(1)
+            tok = tok if tok.startswith("web.gvs+") else "web.gvs+" + tok
+            masked = _mask_po_token(tok)
+            log_debug(f"_probe_docker_logs: найден poToken в JSON логах контейнера {container_name} -> {masked}")
+            try:
+                print(Fore.GREEN + f"PO token найден в логах контейнера (JSON): {masked}" + Style.RESET_ALL)
+            except Exception:
+                pass
+            return tok
+    except Exception as e:
+        log_debug(f"_probe_docker_logs: ошибка при чтении логов {container_name}: {e}")
+    return None
+
+# --- Docker helper: exec generate_once.js внутри контейнера и распарсить вывод ---
+def _probe_docker_exec_generate(container_name: str, script_path_in_container: str = "/app/build/generate_once.js", timeout: int = 20) -> str | None:
+    """
+    Выполнить node <script_path_in_container> внутри запущенного контейнера и извлечь poToken.
+    Возвращает токен (с префиксом web.gvs+) или None.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        log_debug("_probe_docker_exec_generate: docker не найден")
+        return None
+    try:
+        proc_chk = subprocess.run([docker, "ps", "-q", "-f", f"name={container_name}"],
+                                  capture_output=True, text=True, timeout=6)
+        if not (proc_chk.stdout or proc_chk.stderr).strip():
+            log_debug(f"_probe_docker_exec_generate: контейнер {container_name} не запущен")
+            return None
+
+        cmd = [docker, "exec", "-i", container_name, "node", script_path_in_container]
+        log_debug(f"_probe_docker_exec_generate: exec: {' '.join(cmd)}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if not out:
+            log_debug(f"_probe_docker_exec_generate: пустой вывод при exec в {container_name}")
+            return None
+
+        # 1) Пытаемся разобрать последний JSON-объект в выводе
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        if lines:
+            last = lines[-1]
+            try:
+                j = json.loads(last)
+                tok = j.get("poToken") or j.get("po_token") or None
+                if tok:
+                    if not tok.startswith("web.gvs+"):
+                        tok = "web.gvs+" + tok
+                    masked = _mask_po_token(tok)
+                    log_debug(f"_probe_docker_exec_generate: найден poToken через docker exec в {container_name} -> {masked}")
+                    try:
+                        print(Fore.GREEN + f"PO token получен через docker exec: {masked}" + Style.RESET_ALL)
+                    except Exception:
+                        pass
+                    return tok
+            except Exception:
+                pass
+        # 2) fallback: regex по всему выводу
+        m = re.search(r'(web\.gvs\+[A-Za-z0-9_\-]+)', out)
+        if m:
+            masked = _mask_po_token(m.group(1))
+            log_debug(f"_probe_docker_exec_generate: найден token regex в выводе docker exec для {container_name} -> {masked}")
+            try:
+                print(Fore.GREEN + f"PO token получен через docker exec (regex): {masked}" + Style.RESET_ALL)
+            except Exception:
+                pass
+            return m.group(1)
+        m2 = re.search(r'["\']poToken["\']\s*:\s*["\']([^"\']+)["\']', out)
+        if m2:
+            tok = m2.group(1)
+            if not tok.startswith("web.gvs+"):
+                tok = "web.gvs+" + tok
+            masked = _mask_po_token(tok)
+            log_debug(f"_probe_docker_exec_generate: найден poToken в выводе docker exec (regex) для {container_name} -> {masked}")
+            try:
+                print(Fore.GREEN + f"PO token получен через docker exec (poToken): {masked}" + Style.RESET_ALL)
+            except Exception:
+                pass
+            return tok
+    except subprocess.TimeoutExpired:
+        log_debug(f"_probe_docker_exec_generate: таймаут выполнения в контейнере {container_name}")
+    except Exception as e:
+        log_debug(f"_probe_docker_exec_generate: ошибка -> {e}")
+    return None
+
+# --- Helper: попытаться запустить контейнер автоматически (если не найден) ---
+def _ensure_container_running(image: str, name: str, port: int = 4416, timeout: int = 20) -> bool:
+    """
+    Убедиться, что контейнер с именем name запущен. Если нет — попытка auto-run через _try_auto_start_docker.
+    Возвращает True если контейнер запущен.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        log_debug("_ensure_container_running: docker не найден")
+        return False
+    try:
+        proc = subprocess.run([docker, "ps", "-q", "-f", f"name={name}"],
+                              capture_output=True, text=True, timeout=6)
+        if (proc.stdout or "").strip():
+            log_debug(f"_ensure_container_running: контейнер {name} уже запущен")
+            return True
+    except Exception:
+        pass
+
+    # Попробуем авто-запуск (без запроса) — временно переключаем глобальный флаг BGUTIL_NO_PROMPT
+    global BGUTIL_NO_PROMPT
+    prev = BGUTIL_NO_PROMPT
+    BGUTIL_NO_PROMPT = True
+    try:
+        ok = _try_auto_start_docker(image, name, port=port, timeout=timeout)
+        if ok:
+            time.sleep(2)
+            log_debug(f"_ensure_container_running: контейнер {name} запущен автоматом")
+            return True
+    finally:
+        BGUTIL_NO_PROMPT = prev
+    log_debug(f"_ensure_container_running: не удалось запустить контейнер {name}")
+    return False
+
 def retrieve_po_token_auto(timeout:int = 30) -> str | None:
     """
-    Попытки автоматически получить PO token в порядке:
-      1) уже в окружении (YTDLP_PO_TOKEN)
-      2) HTTP probe на BGUTIL_PROVIDER_BASE_URL (по умолчанию http://127.0.0.1:4416)
-      3) поиск локального node-скрипта
-      4) при наличии node — автоматически скачать официальный single-file скрипт и запустить его
-      5) fallback: автозапуск Docker (без запроса)
+    Попытки автоматически получить PO token.
+    Порядок: env -> HTTP probe -> docker logs -> docker exec generate_once.js -> локальные node -> auto-download -> автозапуск docker.
+    При успешном получении — устанавливает os.environ[YTDLP_PO_TOKEN_ENV].
     """
     try:
-        # 0) уже задан
+        # 0) уже задан в окружении
         env_tok = os.environ.get(YTDLP_PO_TOKEN_ENV)
         if env_tok:
             log_debug("retrieve_po_token_auto: token уже в окружении")
             return env_tok
 
-        # 1) HTTP probe
-        base = os.environ.get("BGUTIL_PROVIDER_BASE_URL", "http://127.0.0.1:4416")
-        token = _probe_http_provider(base, timeout=3)
+        docker_available = shutil.which("docker") is not None
+        docker_name = BGUTIL_DOCKER_NAME
+        docker_image = BGUTIL_DOCKER_IMAGE
+        provider_base = BGUTIL_PROVIDER_BASE_URL
+
+        # 1) HTTP probe (быстрая попытка)
+        token = _probe_http_provider(provider_base, timeout=3)
         if token:
             os.environ[YTDLP_PO_TOKEN_ENV] = token
+            masked = _mask_po_token(token)
+            log_debug(f"retrieve_po_token_auto: token найден через HTTP probe -> {masked}")
+            try:
+                print(Fore.GREEN + f"PO token установлен автоматически: {masked}" + Style.RESET_ALL)
+            except Exception:
+                pass
+            if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                try:
+                    subprocess.run(["setx", YTDLP_PO_TOKEN_ENV, token], check=False)
+                except Exception:
+                    pass
             return token
 
-        # 2) поиск локального node-скрипта
+        # 2) поиск в логах Docker
+        if docker_available:
+            tok = _probe_docker_logs(docker_name, tail=2000)
+            if tok:
+                os.environ[YTDLP_PO_TOKEN_ENV] = tok
+                masked = _mask_po_token(tok)
+                log_debug(f"retrieve_po_token_auto: token найден в логах docker -> {masked}")
+                try:
+                    print(Fore.GREEN + f"PO token установлен автоматически: {masked}" + Style.RESET_ALL)
+                except Exception:
+                    pass
+                if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                    try:
+                        subprocess.run(["setx", YTDLP_PO_TOKEN_ENV, tok], check=False)
+                    except Exception:
+                        pass
+                return tok
+
+            # 3) docker exec generate_once.js (если контейнер запущен или автозапуск удастся)
+            ran = _ensure_container_running(docker_image, docker_name, port=int(BGUTIL_DOCKER_PORT), timeout=20)
+            if ran:
+                candidate_paths = [
+                    BGUTIL_CONTAINER_SCRIPT_PATH,
+                    "/app/build/generate_once.js",
+                    "/app/server/build/generate_once.js",
+                    "/server/build/generate_once.js",
+                ]
+                for cp in candidate_paths:
+                    tok = _probe_docker_exec_generate(docker_name, script_path_in_container=cp, timeout=20)
+                    if tok:
+                        os.environ[YTDLP_PO_TOKEN_ENV] = tok
+                        masked = _mask_po_token(tok)
+                        log_debug(f"retrieve_po_token_auto: token получен через docker exec generate_once.js -> {masked}")
+                        try:
+                            print(Fore.GREEN + f"PO token установлен автоматически: {masked}" + Style.RESET_ALL)
+                        except Exception:
+                            pass
+                        if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                            try:
+                                subprocess.run(["setx", YTDLP_PO_TOKEN_ENV, tok], check=False)
+                            except Exception:
+                                pass
+                        return tok
+
+        # 4) локальный node-скрипт (если есть)
         home = Path.home()
         candidates = []
         if os.environ.get("BGUTIL_SCRIPT_PATH"):
@@ -303,18 +571,23 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
                 if c and c.exists():
                     token = _try_run_node_script(c, timeout=timeout)
                     if token:
+                        masked = _mask_po_token(token)
+                        log_debug(f"retrieve_po_token_auto: token получен локальным node-скриптом -> {masked}")
+                        try:
+                            print(Fore.GREEN + f"PO token установлен автоматически: {masked}" + Style.RESET_ALL)
+                        except Exception:
+                            pass
                         os.environ[YTDLP_PO_TOKEN_ENV] = token
                         return token
             except Exception as e:
                 log_debug(f"retrieve_po_token_auto: local script {c} -> {e}")
                 continue
 
-        # 3) Если есть node — в приоритете автоматически скачать официальный single-file скрипт и запустить его
+        # 5) автозагрузка remote script (node available)
         script_url = os.environ.get("BGUTIL_SCRIPT_URL")
         node_cmd = shutil.which(os.environ.get("BGUTIL_NODE_CMD", "node"))
         if node_cmd:
             default_raw = "https://raw.githubusercontent.com/brainicism/bgutil-ytdlp-pot-provider/master/server/build/generate_once.js"
-            # Попытка 1: официальный raw
             try:
                 import tempfile, urllib.request
                 tmpd = Path(tempfile.mkdtemp(prefix="bgutil_"))
@@ -323,11 +596,16 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
                 urllib.request.urlretrieve(default_raw, str(dst))
                 token = _try_run_node_script(dst, timeout=timeout)
                 if token:
+                    masked = _mask_po_token(token)
+                    log_debug(f"retrieve_po_token_auto: token получен из auto-download скрипта -> {masked}")
+                    try:
+                        print(Fore.GREEN + f"PO token установлен автоматически: {masked}" + Style.RESET_ALL)
+                    except Exception:
+                        pass
                     os.environ[YTDLP_PO_TOKEN_ENV] = token
                     return token
             except Exception as e:
                 log_debug(f"retrieve_po_token_auto: auto download/run default script failed -> {e}")
-            # Попытка 2: если указан script_url — скачать и запустить его тоже автоматически
             if script_url:
                 try:
                     import tempfile, urllib.request
@@ -337,39 +615,23 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
                     urllib.request.urlretrieve(script_url, str(dst))
                     token = _try_run_node_script(dst, timeout=timeout)
                     if token:
+                        masked = _mask_po_token(token)
+                        log_debug(f"retrieve_po_token_auto: token получен из auto-download(script_url) -> {masked}")
+                        try:
+                            print(Fore.GREEN + f"PO token установлен автоматически: {masked}" + Style.RESET_ALL)
+                        except Exception:
+                            pass
                         os.environ[YTDLP_PO_TOKEN_ENV] = token
                         return token
                 except Exception as e:
                     log_debug(f"retrieve_po_token_auto: auto download/run script_url failed -> {e}")
-
-        # 4) Если node не помог — попробовать автозапустить Docker (без запроса)
-        if shutil.which("docker"):
-            image = os.environ.get("BGUTIL_DOCKER_IMAGE", "brainicism/bgutil-ytdlp-pot-provider:latest")
-            name = os.environ.get("BGUTIL_DOCKER_NAME", "bgutil-provider-for-vdl")
-            # force no prompt for docker auto-start (temporarily set env)
-            prev_no_prompt = os.environ.get("BGUTIL_NO_PROMPT")
-            os.environ["BGUTIL_NO_PROMPT"] = "1"
-            try:
-                started = _try_auto_start_docker(image, name, port=int(os.environ.get("BGUTIL_DOCKER_PORT", "4416")), timeout=20)
-            finally:
-                if prev_no_prompt is None:
-                    os.environ.pop("BGUTIL_NO_PROMPT", None)
-                else:
-                    os.environ["BGUTIL_NO_PROMPT"] = prev_no_prompt
-            if started:
-                for _ in range(6):
-                    token = _probe_http_provider(base, timeout=3)
-                    if token:
-                        os.environ[YTDLP_PO_TOKEN_ENV] = token
-                        return token
-                    time.sleep(1)
 
         log_debug("retrieve_po_token_auto: не удалось получить PO token автоматически")
         return None
     except Exception as e:
         log_debug(f"retrieve_po_token_auto: исключение -> {e}")
         return None
-
+    
 # NOTE: Вызов retrieve_po_token_auto отложен вниз, после импортов и инициализации colorama.
 # Здесь лишь оставляем заглушку, чтобы не выполнять сетевые/IO операции во время определения модуля.
 # retrieve_po_token_auto будет вызываться ниже, после init(autoreset=True).
