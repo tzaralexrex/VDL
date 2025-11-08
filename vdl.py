@@ -76,13 +76,16 @@ YTDLP_ALLOW_MISSING_POT_ENV = "YTDLP_ALLOW_MISSING_POT"
 # --- Параметры поведения bgutil / автополучения PO token ---
 # Значения по умолчанию (локальные константы скрипта).
 # По умолчанию скрипт работает "из коробки" — без требуемых внешних env vars.
-BGUTIL_PERSIST_TOKEN = False                                # при True — после автополучения выполнится setx на Windows
-BGUTIL_DOCKER_NAME = "bgutil-provider"                      # имя контейнера для поиска/exec
-BGUTIL_DOCKER_IMAGE = "brainicism/bgutil-ytdlp-pot-provider:latest"  # образ для авто-запуска
+BGUTIL_PERSIST_TOKEN = False
+BGUTIL_DOCKER_NAME = "bgutil-provider"
+BGUTIL_DOCKER_IMAGE = "brainicism/bgutil-ytdlp-pot-provider:latest"
 BGUTIL_DOCKER_PORT = 4416
 BGUTIL_PROVIDER_BASE_URL = f"http://127.0.0.1:{BGUTIL_DOCKER_PORT}"
-BGUTIL_CONTAINER_SCRIPT_PATH = "/app/build/generate_once.js"  # путь внутри контейнера по умолчанию
-BGUTIL_NO_PROMPT = False                                     # если True — не спрашивать пользователя при автозапуске docker
+BGUTIL_CONTAINER_SCRIPT_PATH = "/app/build/generate_once.js"
+BGUTIL_NO_PROMPT = False
+
+# Отложенное хранение автоматически найденного PO token (не записываем сразу в os.environ)
+AUTO_PO_TOKEN = None
 
 def _env_override(name: str, current, cast=lambda x: x):
     """
@@ -239,27 +242,86 @@ def _probe_http_provider(base_url: str, timeout: int = 3) -> str | None:
         if not requests:
             log_debug("_probe_http_provider: requests не доступен, пропуск HTTP probe")
             return None
-        # расширенный набор путей и анализ тела ответа даже при 404/500
-        probe_paths = ["/generate", "/generate_once", "/pot", "/token", "/once", "/api/generate", "/"]
+        # расширенный набор путей и анализ тела/JSON даже при 404/500
+        probe_paths = ["/generate", "/generate_once", "/pot", "/token", "/once", "/api/generate", "/", "/get_pot"]
         for p in probe_paths:
-            url = base_url.rstrip("/") + p
+            # Формируем URL корректно (учитываем возможный trailing slash в base_url и leading slash в p)
+            url = base_url.rstrip("/") + (p if p.startswith("/") else "/" + p)
+            resp = None
             try:
                 log_debug(f"_probe_http_provider: GET {url}")
                 resp = requests.get(url, timeout=timeout)
-                body = resp.text if resp is not None else ""
-                if body:
-                    token = _find_po_token_in_text(body)
+            except Exception as e:
+                log_debug(f"_probe_http_provider: GET {url} -> {e}")
+                resp = None
+
+            body = resp.text if resp is not None else ""
+            token = None
+
+            # Попытка распарсить JSON-ответ (если есть)
+            try:
+                if resp is not None:
+                    j = resp.json()
+                    if isinstance(j, dict):
+                        for key in ("poToken", "po_token", "pot", "token"):
+                            if key in j and j[key]:
+                                token = str(j[key])
+                                break
+            except Exception:
+                pass
+
+            # Если не нашли в JSON — ищем regex в тексте
+            if not token and body:
+                token = _find_po_token_in_text(body)
+
+            if token:
+                # Нормализуем: некоторые провайдеры возвращают poToken БЕЗ префикса web.gvs+
+                if not token.startswith("web.gvs+"):
+                    token = "web.gvs+" + token
+                masked = _mask_po_token(token)
+                log_debug(f"_probe_http_provider: найден token в GET {url} -> {masked}")
+                try:
+                    print(Fore.GREEN + f"PO token найден через HTTP-провайдера (GET): {masked}" + Style.RESET_ALL)
+                except Exception:
+                    pass
+                return token
+
+            # Если путь /get_pot (или похожий) — попробуем POST независимо от результата GET
+            if p.endswith("get_pot") or p.endswith("/get_pot"):
+                try:
+                    post_url = url
+                    payload = {}  # пустой JSON/формы — сервер обычно игнорирует тело
+                    log_debug(f"_probe_http_provider: POST {post_url}")
+                    resp2 = requests.post(post_url, json=payload, timeout=timeout)
+                    body2 = resp2.text if resp2 is not None else ""
+                    token = None
+                    try:
+                        j2 = resp2.json() if resp2 is not None else None
+                        if isinstance(j2, dict):
+                            for key in ("poToken", "po_token", "pot", "token"):
+                                if key in j2 and j2[key]:
+                                    token = str(j2[key])
+                                    break
+                    except Exception:
+                        pass
+                    if not token and body2:
+                        token = _find_po_token_in_text(body2)
                     if token:
+                        # Нормализуем: некоторые провайдеры возвращают poToken БЕЗ префикса web.gvs+
+                        if not token.startswith("web.gvs+"):
+                            token = "web.gvs+" + token
                         masked = _mask_po_token(token)
-                        log_debug(f"_probe_http_provider: найден token в {url} -> {masked}")
+                        log_debug(f"_probe_http_provider: найден token в POST {post_url} -> {masked}")
                         try:
-                            print(Fore.GREEN + f"PO token найден через HTTP-провайдера: {masked}" + Style.RESET_ALL)
+                            print(Fore.GREEN + f"PO token найден через HTTP-провайдера (POST): {masked}" + Style.RESET_ALL)
                         except Exception:
                             pass
                         return token
-            except Exception as e:
-                log_debug(f"_probe_http_provider: {url} -> {e}")
-                continue
+                except Exception as e2:
+                    log_debug(f"_probe_http_provider: POST {url} -> {e2}")
+                    # продолжим пробовать другие пути
+                    continue
+        # конец цикла probe_paths
     except Exception as e:
         log_debug(f"_probe_http_provider: исключение -> {e}")
     return None
@@ -879,10 +941,12 @@ try:
             print(Fore.YELLOW + "bgutil-плагин установлен — пытаемся автоматически получить PO token..." + Style.RESET_ALL)
         _token = retrieve_po_token_auto()
         if _token:
-            log_debug("YTDLP PO token установлен автоматически (retrieve_po_token_auto).")
-            print(Fore.GREEN + "Автоматически получен PO token." + Style.RESET_ALL)
+            # НЕ записываем автоматически в os.environ — сохраняем в отложенную переменную.
+            AUTO_PO_TOKEN = _token
+            masked = _mask_po_token(_token)
+            log_debug("YTDLP PO token найден автоматически (отложено) -> " + masked)
+            print(Fore.GREEN + "Автоматически получен PO token (будет применён при необходимости)." + Style.RESET_ALL)
         else:
-            # Не найдено — оставляем возможность хардкода/фоллбеков позже
             log_debug("Автоматическое получение PO token не удалось.")
 except Exception as _:
     log_debug("Не удалось выполнить автоматическую установку PO token после инициализации зависимостей.")
@@ -1391,18 +1455,12 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
     log_debug(f"get_video_info: Итоговая платформа: {platform}, URL: {url}")
     ydl_opts = {'quiet': True, 'skip_download': True}
 
-    # --- Добавляем extractor_args для YouTube на основании env (чтобы избежать лишних попыток провайдеров) ---
+    # --- Добавляем extractor_args для YouTube через централизованную функцию ---
     if platform == 'youtube':
-        po_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
-        allow_missing_pot_env = str(os.environ.get(YTDLP_ALLOW_MISSING_POT_ENV, "")).lower() in ("1", "true", "yes")
-        allow_missing_pot = allow_missing_pot_env or bool(YTDLP_ALLOW_MISSING_POT_DEFAULT)
-        if po_token:
-            # ВАЖНО: оборачиваем токен в список, чтобы yt-dlp не итерировал строку по символам
-            ydl_opts['extractor_args'] = {'youtube': {'po_token': [po_token]}}
-            log_debug("get_video_info: добавлены extractor_args с po_token из окружения")
-        elif allow_missing_pot:
-            ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
-            log_debug("get_video_info: добавлены extractor_args formats=missing_pot (разрешено настройками)")
+        xa = build_extractor_args_for_youtube()
+        if xa:
+            ydl_opts['extractor_args'] = xa
+            log_debug(f"get_video_info: добавлены extractor_args для youtube: {xa}")
 
     if platform == "youtube" and ("list=" in url or "/playlist" in url):
         ydl_opts['extract_flat'] = True
@@ -2167,19 +2225,96 @@ def phook(d, last_file_ref, subtitle_options=None, output_name=None, output_path
 def build_extractor_args_for_youtube():
     """
     Возвращает dict для ydl_opts['extractor_args'] с po_token (в списке) или formats=missing_pot.
-    Используется повсеместно перед созданием yt_dlp.YoutubeDL(...).
+    Также поддерживает YTDLP_PLAYER_CLIENT (по умолчанию 'web') чтобы принудительно выбрать client.
     """
     try:
-        po_token = os.environ.get(YTDLP_PO_TOKEN_ENV)
+        po_token_env = os.environ.get(YTDLP_PO_TOKEN_ENV)
+        player_client_env = os.environ.get("YTDLP_PLAYER_CLIENT", "web")
         allow_missing_pot_env = str(os.environ.get(YTDLP_ALLOW_MISSING_POT_ENV, "")).lower() in ("1", "true", "yes")
         allow_missing_pot = allow_missing_pot_env or bool(YTDLP_ALLOW_MISSING_POT_DEFAULT)
-        if po_token:
-            return {'youtube': {'po_token': [po_token]}}
-        if allow_missing_pot:
-            return {'youtube': {'formats': 'missing_pot'}}
+
+        # Нормализуем вход: допускаем comma-separated строки и списки
+        def ensure_list(v):
+            if v is None:
+                return []
+            if isinstance(v, (list, tuple)):
+                return list(v)
+            s = str(v)
+            # разделитель запятая или пробелы
+            if ',' in s:
+                parts = [p.strip() for p in s.split(',') if p.strip()]
+                return parts
+            if ' ' in s:
+                parts = [p.strip() for p in s.split() if p.strip()]
+                return parts
+            return [s]
+
+        xa = {}
+        player_clients = ensure_list(player_client_env)
+        po_tokens = ensure_list(po_token_env) if po_token_env else []
+
+        if po_tokens:
+            # Если есть po_token(ы) — используем их (в виде списка) и передаём player_client как список
+            xa['youtube'] = {'po_token': po_tokens}
+            if player_clients:
+                xa['youtube']['player_client'] = player_clients
+        else:
+            # Нет po_token — задаём player_client и, опционально, formats=missing_pot
+            xa['youtube'] = {}
+            if player_clients:
+                xa['youtube']['player_client'] = player_clients
+            if allow_missing_pot:
+                xa['youtube']['formats'] = 'missing_pot'
+
+        # Если результат пустой — вернуть {}
+        if xa and xa.get('youtube'):
+            # маскируем po_token в логах
+            xa_for_log = {'youtube': xa['youtube'].copy()}
+            if 'po_token' in xa_for_log['youtube']:
+                xa_for_log['youtube']['po_token'] = [_mask_po_token(t) for t in _ensure_list_simple(xa_for_log['youtube'].get('po_token'))]
+            log_debug(f"build_extractor_args_for_youtube: result -> {xa_for_log}")
+            return xa
     except Exception as e:
         log_debug(f"build_extractor_args_for_youtube: error -> {e}")
     return {}
+
+# --- Helper: гарантированно возвращает список из значения (строка/список/None) ---
+def _ensure_list_simple(v):
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    s = str(v)
+    if ',' in s:
+        return [p.strip() for p in s.split(',') if p.strip()]
+    if ' ' in s:
+        return [p.strip() for p in s.split() if p.strip()]
+    return [s.strip()]
+
+# --- Helper: аккуратно объединяет extractor_args в ydl_opts, не перезаписывая другие ключи ---
+def merge_extractor_args(ydl_opts: dict, new_args: dict):
+    """
+    Deep-merge new_args -> ydl_opts['extractor_args'].
+    Для полей 'po_token' и 'player_client' объединяет списки уникально.
+    """
+    if not new_args:
+        return
+    cur = ydl_opts.get('extractor_args') or {}
+    for extractor, payload in (new_args.items() if isinstance(new_args, dict) else []):
+        if extractor not in cur or not isinstance(cur[extractor], dict):
+            # присваиваем копию
+            cur[extractor] = payload.copy() if isinstance(payload, dict) else payload
+            continue
+        # оба dict -> merge внутрь
+        for k, v in (payload.items() if isinstance(payload, dict) else []):
+            if k in ('po_token', 'player_client'):
+                existing = _ensure_list_simple(cur[extractor].get(k))
+                newl = _ensure_list_simple(v)
+                merged = list(dict.fromkeys(existing + newl))
+                cur[extractor][k] = merged
+            else:
+                cur[extractor][k] = v
+    ydl_opts['extractor_args'] = cur
 
 def download_video(
         url, video_id, audio_id,
@@ -2246,13 +2381,8 @@ def download_video(
 
     # --- При необходимости для YouTube: добавить extractor_args заранее (по env) ---
     if platform == 'youtube':
-        extractor_args = {}
-        if po_token:
-            # Оборачиваем токен в список — предотвращаем итерацию по символам внутри yt-dlp
-            extractor_args['youtube'] = {'po_token': [po_token]}
-        elif allow_missing_pot:
-            # Включаем небезопасный fallback — включает "missing_pot" форматы
-            extractor_args['youtube'] = {'formats': 'missing_pot'}
+        # Получаем готовый extractor_args (включая po_token / player_client / formats), сформированный централизованно
+        extractor_args = build_extractor_args_for_youtube()
         if extractor_args:
             ydl_opts['extractor_args'] = extractor_args
             log_debug(f"yt-dlp extractor_args set for youtube: {extractor_args}")
@@ -2334,33 +2464,52 @@ def download_video(
             sabr_indicators = ("sabr", "web only has sabr", "gvs po token", "po_token", "formats=missing_pot", "nsig", "SABR")
             if platform == 'youtube' and any(ind.lower() in err_text.lower() for ind in sabr_indicators):
                 current_xa = ydl_opts.get('extractor_args') or {}
-                # Если уже пробовали по-умолчанию — не повторяем бесконечно
+
+                # Если уже пробовали extractor_args с po_token — не зацикливаться
                 if not current_xa.get('youtube'):
                     # 0) Если есть PO token в окружении — просто использовать его
                     if po_token:
-                        ydl_opts['extractor_args'] = {'youtube': {'po_token': [po_token]}}
-                        log_debug("DownloadError: обнаружен SABR/PO-token сигнал — пробуем повтор с po_token из окружения.")
-                        print(Fore.YELLOW + "Обнаружен SABR/PO-token сценарий. Повтор с PO token из окружения..." + Style.RESET_ALL)
+                        merge_extractor_args(ydl_opts, {'youtube': {'po_token': [po_token]}})
+                        log_debug("DownloadError: обнаружен SABR/PO-token сигнал — пробуем повтор с po_token из окружения (merge).")
                         time.sleep(1)
                         continue
 
+                    # Попробуем однократно получить token автоматически (не делаем это при каждом сабре)
+                    if not ydl_opts.get('_tried_auto_po'):
+                        # Попытка использовать отложенный токен, если он был найден при старте
+                        token_to_try = AUTO_PO_TOKEN
+                        if not token_to_try:
+                            token_to_try = retrieve_po_token_auto(timeout=8)
+                        if token_to_try:
+                            merge_extractor_args(ydl_opts, {'youtube': {'po_token': [token_to_try]}})
+                            ydl_opts['_tried_auto_po'] = True
+                            log_debug("DownloadError: получен PO token автоматически — повтор с extractor_args.")
+                            try:
+                                print(Fore.YELLOW + "Автоматически получен PO token — повтор загрузки..." + Style.RESET_ALL)
+                            except Exception:
+                                pass
+                            # опционально: если нужно, сохранить в env при желании пользователя/BGUTIL_PERSIST_TOKEN
+                            if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                                os.environ[YTDLP_PO_TOKEN_ENV] = token_to_try
+                            time.sleep(1)
+                            continue
+
                     # 1) Плагин bgutil уже проверён при старте — не пытаемся автоустанавливать его здесь.
                     log_debug("DownloadError: SABR detected — bgutil plugin installation is handled at startup; skipping in-place install.")
-
                     # 2) Если заранее разрешён missing_pot через env/code — применяем его немедленно
                     if allow_missing_pot:
-                        ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+                        merge_extractor_args(ydl_opts, {'youtube': {'formats': 'missing_pot'}})
                         ydl_opts['_tried_missing_pot'] = True
-                        log_debug("DownloadError: пробуем сразу formats=missing_pot (разрешено в настройках).")
+                        log_debug("DownloadError: пробуем сразу formats=missing_pot (разрешено в настройках) (merge).")
                         print(Fore.YELLOW + "Обнаружен SABR. Повтор с extractor-arg formats=missing_pot..." + Style.RESET_ALL)
                         time.sleep(1)
                         continue
 
                     # 3) Автоматическая одноразовая попытка (без env) — если включено поведение fallback
                     if AUTO_TRY_MISSING_POT_AS_FALLBACK and not ydl_opts.get('_tried_missing_pot'):
-                        ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+                        merge_extractor_args(ydl_opts, {'youtube': {'formats': 'missing_pot'}})
                         ydl_opts['_tried_missing_pot'] = True
-                        log_debug("DownloadError: автоматическая одноразовая попытка formats=missing_pot (fallback).")
+                        log_debug("DownloadError: автоматическая одноразовая попытка formats=missing_pot (fallback) (merge).")
                         print(Fore.YELLOW + "Обнаружен SABR. Автоматическая попытка применить formats=missing_pot..." + Style.RESET_ALL)
                         time.sleep(1)
                         continue
@@ -2371,15 +2520,15 @@ def download_video(
                     except Exception:
                         ans = ""
                     if ans.lower() == "missing":
-                        ydl_opts['extractor_args'] = {'youtube': {'formats': 'missing_pot'}}
+                        merge_extractor_args(ydl_opts, {'youtube': {'formats': 'missing_pot'}})
                         ydl_opts['_tried_missing_pot'] = True
-                        log_debug("Пользователь выбрал formats=missing_pot для повторной попытки.")
+                        log_debug("Пользователь выбрал formats=missing_pot для повторной попытки (merge).")
                         print(Fore.YELLOW + "Повтор с extractor-arg formats=missing_pot..." + Style.RESET_ALL)
                         time.sleep(1)
                         continue
                     elif ans:
-                        ydl_opts['extractor_args'] = {'youtube': {'po_token': [ans]}}
-                        log_debug("Пользователь ввёл PO token вручную — повтор с ним.")
+                        merge_extractor_args(ydl_opts, {'youtube': {'po_token': [ans]}})
+                        log_debug("Пользователь ввёл PO token вручную — повтор с ним (merge).")
                         print(Fore.YELLOW + "Повтор с введённым PO token..." + Style.RESET_ALL)
                         time.sleep(1)
                         continue
