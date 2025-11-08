@@ -208,11 +208,35 @@ def import_or_update(module_name, pypi_name=None, min_version=None, force_check=
 
 # --- Временный (сессионный) хардкод PO token ---
 def _find_po_token_in_text(text: str) -> str | None:
-    """Ищем строку вида web.gvs+... в произвольном тексте/выводе."""
+    """Ищем строку вида web.gvs+... или poToken/... в произвольном тексте/выводе.
+    Поддерживает случаи, когда провайдер возвращает токен БЕЗ префикса — в таком случае
+    возвращаем токен с добавленным 'web.gvs+'."""
     if not text:
         return None
-    m = re.search(r'(web\.gvs\+[A-Za-z0-9_\-]+)', text)
-    return m.group(1) if m else None
+
+    # 1) Явный web.gvs+ токен
+    m = re.search(r'(web\.gvs\+[A-Za-z0-9_\-]+=*)', text)
+    if m:
+        return m.group(1)
+
+    # 2) JSON-ключи: "poToken": "VALUE" или 'po_token': 'VALUE'
+    m2 = re.search(r'["\'](?:poToken|po_token|pot|token)["\']\s*:\s*["\']([^"\']+)["\']', text)
+    if m2:
+        tok = m2.group(1)
+        if not tok.startswith("web.gvs+"):
+            tok = "web.gvs+" + tok
+        return tok
+
+    # 3) Длинная base64-подобная строка (fallback) — берём длинные фрагменты и добавляем префикс
+    #    Ограничение длины снижает ложные срабатывания.
+    m3 = re.search(r'\b([A-Za-z0-9_\-]{40,}={0,2})\b', text)
+    if m3:
+        tok = m3.group(1)
+        if not tok.startswith("web.gvs+"):
+            tok = "web.gvs+" + tok
+        return tok
+
+    return None
 
 def _mask_po_token(tok: str | None, head: int = 6, tail: int = 6) -> str:
     """Возвращает безопасное представление токена: сохраняет префикс web.gvs+ целиком и первые/последние символы."""
@@ -327,7 +351,8 @@ def _probe_http_provider(base_url: str, timeout: int = 3) -> str | None:
     return None
 
 def _try_run_node_script(script_path: Path, timeout: int = 30) -> str | None:
-    """Запустить локальный node-скрипт generate_once.js и извлечь токен из вывода."""
+    """Запустить локальный node-скрипт generate_once.js и извлечь токен из вывода.
+    Поддерживаем JSON в последней строке, JSON в любом месте вывода и plain token fallback."""
     node_cmd = os.environ.get("BGUTIL_NODE_CMD", "node")
     try:
         if not script_path.exists():
@@ -336,7 +361,43 @@ def _try_run_node_script(script_path: Path, timeout: int = 30) -> str | None:
         log_debug(f"_try_run_node_script: запуск {node_cmd} {script_path}")
         proc = subprocess.run([node_cmd, str(script_path)], capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
-        return _find_po_token_in_text(out)
+        if not out:
+            return None
+
+        # Попытка: последняя ненулевая строка — JSON
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        if lines:
+            last = lines[-1]
+            try:
+                j = json.loads(last)
+                if isinstance(j, dict):
+                    tok = j.get("poToken") or j.get("po_token") or j.get("pot") or j.get("token")
+                    if tok:
+                        if not tok.startswith("web.gvs+"):
+                            tok = "web.gvs+" + tok
+                        masked = _mask_po_token(tok)
+                        log_debug(f"_try_run_node_script: найден poToken в JSON (last line) -> {masked}")
+                        return tok
+            except Exception:
+                pass
+
+        # Попробуем найти JSON-ключы по всему выводу
+        m2 = re.search(r'["\'](?:poToken|po_token|pot|token)["\']\s*:\s*["\']([^"\']+)["\']', out)
+        if m2:
+            tok = m2.group(1)
+            if not tok.startswith("web.gvs+"):
+                tok = "web.gvs+" + tok
+            masked = _mask_po_token(tok)
+            log_debug(f"_try_run_node_script: найден poToken в выводе (JSON) -> {masked}")
+            return tok
+
+        # Fallback: общий поиск (включая случаи без префикса)
+        tok = _find_po_token_in_text(out)
+        if tok:
+            masked = _mask_po_token(tok)
+            log_debug(f"_try_run_node_script: найден poToken в выводе (fallback) -> {masked}")
+            return tok
+
     except FileNotFoundError:
         log_debug("_try_run_node_script: node не найден в PATH")
     except subprocess.TimeoutExpired:
