@@ -55,8 +55,6 @@ COOKIES_TG = 'cookies_tg.txt'       # Telegram
 
 MAX_RETRIES = 15  # Максимум попыток повторной загрузки при обрывах
 
-CHECK_VER = 1  # Проверять версии зависимостей (1) или только наличие модулей (0)
-
 # --- Настройки для работы с новыми YouTube SABR / PO-Token сценариями ---
 # PO token — служебный токен (пример: "web.gvs+XXX") используемый для получения
 # защищённых DASH-ссылок у YouTube/GVS. Токен секретный — не публиковать.
@@ -755,7 +753,54 @@ def retrieve_po_token_auto(timeout:int = 30) -> str | None:
     except Exception as e:
         log_debug(f"retrieve_po_token_auto: исключение -> {e}")
         return None
-    
+
+# Валидация PO token: лёгкий пробный вызов yt-dlp с extractor_args=po_token
+def validate_po_token(token: str, test_url: str, cookie_file: str | None = None, timeout: int = 8) -> bool:
+    """
+    Проверяет, работает ли переданный PO token для указанного test_url.
+    Возвращает True если token, по результатам yt-dlp, не приводит к явным SABR/PO ошибкам
+    и yt-dlp смог получить мета-данные (или вернул ошибки, не связанные с PO).
+    Это «лёгкая» проверка — используется чтобы подтвердить, что YTDLP_PO_TOKEN в окружении рабочий.
+    """
+    if not token or not test_url:
+        return False
+    try:
+        # Собираем extractor_args на основании токена (player_client по умолчанию 'web')
+        player_client = os.environ.get("YTDLP_PLAYER_CLIENT", "web")
+        xa = {'youtube': {'po_token': [token], 'player_client': [player_client]}}
+        ydl_opts = {'quiet': True, 'skip_download': True, 'extractor_args': xa}
+        if cookie_file:
+            ydl_opts['cookiefile'] = cookie_file
+        # Не делаем глубоких попыток — один быстрый вызов
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(test_url, download=False)
+        # Если info получено — токен явно рабочий
+        if info:
+            log_debug("validate_po_token: extract_info вернул info -> token OK")
+            return True
+        # В редких случаях yt-dlp вернул None — считаем как невалидный
+        log_debug("validate_po_token: extract_info вернул None -> token NOT valid")
+        return False
+    except DownloadError as e:
+        err = str(e).lower()
+        log_debug(f"validate_po_token: DownloadError при проверке token: {err}")
+        # Явные индикаторы проблем с PO/SABR — значит токен невалиден
+        sabr_indicators = ("sabr", "gvs po token", "po_token", "challenge solving failed", "formats=missing_pot", "nsig")
+        if any(ind in err for ind in sabr_indicators):
+            log_debug("validate_po_token: обнаружены SABR/PO-indicators -> token considered INVALID")
+            return False
+        # Для сетевых/таймаут ошибок считаем проверку неудачной (невалид/неопределён)
+        network_indicators = ("timeout", "read timed out", "connection", "network", "http error 5", "http error 429")
+        if any(ind in err for ind in network_indicators):
+            log_debug("validate_po_token: сетевая ошибка при проверке token -> считаем невалид/неопределён (False)")
+            return False
+        # Для прочих ошибок — считаем токен НЕвалидным по умолчанию
+        log_debug("validate_po_token: прочая ошибка при проверке token -> считаем INVALID")
+        return False
+    except Exception as exc:
+        log_debug(f"validate_po_token: исключение при валидации token: {exc}\n{traceback.format_exc()}")
+        return False
+
 # NOTE: Вызов retrieve_po_token_auto отложен вниз, после импортов и инициализации colorama.
 # Здесь лишь оставляем заглушку, чтобы не выполнять сетевые/IO операции во время определения модуля.
 # retrieve_po_token_auto будет вызываться ниже, после init(autoreset=True).
@@ -1245,6 +1290,10 @@ def fallback_download(url):
 def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) -> bool:
     """
     Проверяет, «жив» ли куки-файл по реальной ссылке (например, на видео).
+    Более терпимая логика: при проверке НЕ подставляем extractor_args (PO token),
+    чтобы не провоцировать SABR/форматные ошибки, и считаем некоторые ошибки
+    yt-dlp (Requested format is not available / Only images / SABR hints)
+    нефатальными — т.е. куки скорее валидны.
     """
     if not test_url:
         test_url = "https://www.youtube.com" if platform == "youtube" else "https://www.facebook.com"
@@ -1257,17 +1306,37 @@ def cookie_file_is_valid(platform: str, cookie_path: str, test_url: str = None) 
         # extract_flat только для YouTube-плейлистов!
         if platform == "youtube":
             opts["extract_flat"] = True
-            # Добавляем extractor_args при необходимости (чтобы избежать автопроб провайдера)
-            xa = build_extractor_args_for_youtube()
-            if xa:
-                opts["extractor_args"] = xa
-                log_debug(f"cookie_file_is_valid: добавлены extractor_args для youtube: {xa}")
+            # ВАЖНО: при проверке куков умышленно НЕ подставляем extractor_args/po_token,
+            # т.к. это может вызвать принудительный SABR-путь в yt-dlp и скрыть форматы.
+            log_debug("cookie_file_is_valid: пропущены extractor_args для youtube (проверка куков, чтобы не провоцировать SABR)")
+
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(test_url, download=False)
         return True
-    except DownloadError:
+
+    except DownloadError as e:
+        err_text = str(e).lower()
+        log_debug(f"cookie_file_is_valid: DownloadError при проверке куков: {err_text}")
+
+        # Эти сообщения обычно указывают на проблему форматов / SABR, но НЕ на невалидность куков.
+        nonfatal_indicators = (
+            "requested format is not available",
+            "only images are available",
+            "sabr",
+            "challenge solving failed",
+            "only images",
+            "formats=missing_pot",
+            "n challenge solving failed",
+        )
+        if any(ind in err_text for ind in nonfatal_indicators):
+            log_debug("cookie_file_is_valid: yt-dlp вернул SABR/format сообщение — считаем куки валидными.")
+            return True
+
+        # Для прочих DownloadError считаем куки невалидными
         return False
-    except Exception:
+
+    except Exception as exc:
+        log_debug(f"cookie_file_is_valid: исключение при проверке куков: {exc}\n{traceback.format_exc()}")
         return False
 
 def detect_ffmpeg_path():
@@ -1519,11 +1588,16 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
 
     # --- Добавляем extractor_args для YouTube через централизованную функцию ---
     if platform == 'youtube':
-        xa = build_extractor_args_for_youtube()
-        if xa:
-            ydl_opts['extractor_args'] = xa
-            log_debug(f"get_video_info: добавлены extractor_args для youtube: {xa}")
-
+        # Не подставляем автоматически extractor_args при получении информации,
+        # чтобы yt-dlp показывал отдельные video/audio форматы по умолчанию.
+        # Если пользователь явно установил YTDLP_PO_TOKEN в окружении — разрешаем.
+        if os.environ.get(YTDLP_PO_TOKEN_ENV):
+            xa = build_extractor_args_for_youtube()
+            if xa:
+                ydl_opts['extractor_args'] = xa
+                log_debug(f"get_video_info: добавлены extractor_args для youtube (env token): {xa}")
+        else:
+            log_debug("get_video_info: пропущены extractor_args для youtube (используется deferred AUTO_PO_TOKEN/retry в download_video).")
     if platform == "youtube" and ("list=" in url or "/playlist" in url):
         ydl_opts['extract_flat'] = True
     if cookie_file_path:
@@ -1534,6 +1608,12 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
         log_debug(f"get_video_info: Пробуем cookiesfrombrowser: {cookiesfrombrowser}")
 
     log_debug(f"get_video_info: Запрос информации для URL: {url} с опциями: {ydl_opts}")
+
+    # Дополнительные флаги для локальных обходов SABR внутри get_video_info
+    ydl_opts.setdefault('_tried_missing_pot', False)
+    ydl_opts.setdefault('_tried_auto_po', False)
+    ydl_opts.setdefault('_sabr_tries', 0)
+    SABR_INDICATORS = ("sabr", "web only has sabr", "gvs po token", "po_token", "formats=missing_pot", "nsig", "challenge solving failed", "Only images are available")
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -1551,16 +1631,82 @@ def get_video_info(url, platform, cookie_file_path=None, cookiesfrombrowser=None
                 info['__cookiefile__'] = cookie_file_path
             return info
         except DownloadError as e:
-            err_text = str(e)
+            err_text = str(e).lower()
             retriable = any(key in err_text for key in (
-                "Got error:", "read,", "Read timed out", "retry", "HTTP Error 5", "HTTP Error 429", "Too Many Requests"
+                "got error:", "read,", "read timed out", "retry", "http error 5", "http error 429", "too many requests"
             ))
             log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
+
+            # Специальная обработка SABR/PO-token ошибок прямо в get_video_info
+            if platform == 'youtube' and any(ind in err_text for ind in SABR_INDICATORS):
+                log_debug(f"get_video_info: обнаружен SABR-побочный эффект (attempts sabr={ydl_opts.get('_sabr_tries')})")
+                # a) если есть PO token в окружении — убедимся, что он подставлен
+                current_xa = ydl_opts.get('extractor_args') or {}
+                po_in_env = os.environ.get(YTDLP_PO_TOKEN_ENV)
+                if po_in_env and (not current_xa.get('youtube') or not _ensure_list_simple(current_xa['youtube'].get('po_token'))):
+                    merge_extractor_args(ydl_opts, {'youtube': {'po_token': [po_in_env]}})
+                    log_debug("get_video_info: SABR -> подставлен PO token из окружения, пробуем ещё раз.")
+                    time.sleep(0.5)
+                    ydl_opts['_sabr_tries'] += 1
+                    continue
+
+                # b) попробовать отложенный/автоматически найденный токен (AUTO_PO_TOKEN или retrieve)
+                if not ydl_opts.get('_tried_auto_po') and ydl_opts['_sabr_tries'] < 3:
+                    token_to_try = AUTO_PO_TOKEN or retrieve_po_token_auto(timeout=6)
+                    if token_to_try:
+                        merge_extractor_args(ydl_opts, {'youtube': {'po_token': [token_to_try]}})
+                        ydl_opts['_tried_auto_po'] = True
+                        ydl_opts['_sabr_tries'] += 1
+                        log_debug("get_video_info: SABR -> использован автоматический PO token, повторный запрос.")
+                        try:
+                            print(Fore.YELLOW + "Автоматически получен PO token — повтор запроса информации..." + Style.RESET_ALL)
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                        continue
+
+                # c) применить formats=missing_pot при разрешении через env или как одноразовый fallback
+                allow_missing_pot_env = str(os.environ.get(YTDLP_ALLOW_MISSING_POT_ENV, "")).lower() in ("1", "true", "yes")
+                allow_missing_pot = allow_missing_pot_env or bool(YTDLP_ALLOW_MISSING_POT_DEFAULT)
+                if allow_missing_pot and not ydl_opts.get('_tried_missing_pot'):
+                    merge_extractor_args(ydl_opts, {'youtube': {'formats': 'missing_pot'}})
+                    ydl_opts['_tried_missing_pot'] = True
+                    ydl_opts['_sabr_tries'] += 1
+                    log_debug("get_video_info: SABR -> применён extractor-arg formats=missing_pot и повторяем.")
+                    try:
+                        print(Fore.YELLOW + "Обнаружен SABR. Попытка получить форматы через formats=missing_pot..." + Style.RESET_ALL)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                    continue
+
+                # d) если всё выше не помогло — один раз попросим пользователя (если интерактивно)
+                if ydl_opts['_sabr_tries'] < 3:
+                    try:
+                        ans = input(Fore.CYAN + "yt-dlp сообщил о SABR/PO-token проблеме при получении информации. Ввести PO token сейчас (или 'missing' для formats=missing_pot), Enter — пропустить: " + Style.RESET_ALL).strip()
+                    except Exception:
+                        ans = ""
+                    if ans.lower() == "missing":
+                        merge_extractor_args(ydl_opts, {'youtube': {'formats': 'missing_pot'}})
+                        ydl_opts['_tried_missing_pot'] = True
+                        ydl_opts['_sabr_tries'] += 1
+                        log_debug("get_video_info: пользователь выбрал formats=missing_pot — повтор.")
+                        time.sleep(0.5)
+                        continue
+                    elif ans:
+                        merge_extractor_args(ydl_opts, {'youtube': {'po_token': [ans]}})
+                        ydl_opts['_sabr_tries'] += 1
+                        log_debug("get_video_info: пользователь ввёл PO token — повтор.")
+                        time.sleep(0.5)
+                        continue
+
+            # стандартная логика повторов для сетевых ошибок
             if retriable and attempt < MAX_RETRIES:
                 print(Fore.YELLOW + f"Ошибка получения информации о видео (попытка {attempt}/{MAX_RETRIES}) – повтор через 5 с…" + Style.RESET_ALL)
                 time.sleep(5)
                 continue
             else:
+                # не удалось обработать / исчерпаны попытки — пробрасываем
                 raise
         except Exception as e:
             log_debug(f"get_video_info: Ошибка при вызове ydl.extract_info: {e}\n{traceback.format_exc()}")
@@ -4122,6 +4268,90 @@ def main():
                     cookie_file_to_use = get_cookies_for_platform(platform, cookie_map[platform], url)
                 else:
                     cookie_file_to_use = None
+
+                # --- Блок: проверка/фиксация PO token только для YouTube (выполняется один раз за запуск) ---
+                # Флаг предотвращает повторные валидации на каждой итерации retry
+                if platform == 'youtube' and not globals().get('_YTDLP_ENV_TOKEN_CHECKED'):
+                    globals()['_YTDLP_ENV_TOKEN_CHECKED'] = True
+                    env_tok = os.environ.get(YTDLP_PO_TOKEN_ENV)
+                    test_url_for_validation = url
+                    try:
+                        if env_tok:
+                            log_debug("main: обнаружен YTDLP_PO_TOKEN в окружении — проверяем валидность.")
+                            valid = validate_po_token(env_tok, test_url_for_validation, cookie_file=cookie_file_to_use, timeout=8)
+                            if valid:
+                                masked = _mask_po_token(env_tok)
+                                log_debug(f"main: YTDLP_PO_TOKEN из env валиден -> {masked}")
+                                try:
+                                    print(Fore.GREEN + f"Используется PO token из окружения: {masked}" + Style.RESET_ALL)
+                                except Exception:
+                                    pass
+                            else:
+                                log_debug("main: YTDLP_PO_TOKEN в окружении невалиден — попробуем автополучить новый токен.")
+                                # Попытка получить новый токен автоматически
+                                new_tok = retrieve_po_token_auto(timeout=8)
+                                if new_tok:
+                                    masked = _mask_po_token(new_tok)
+                                    os.environ[YTDLP_PO_TOKEN_ENV] = new_tok
+                                    log_debug(f"main: Автоматически получен новый PO token и установлен в os.environ -> {masked}")
+                                    try:
+                                        print(Fore.GREEN + f"Автоматически получен PO token и установлен в окружении: {masked}" + Style.RESET_ALL)
+                                    except Exception:
+                                        pass
+                                    if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                                        try:
+                                            subprocess.run(["setx", YTDLP_PO_TOKEN_ENV, new_tok], check=False)
+                                            log_debug("main: PO token сохранён в системных переменных через setx (Windows).")
+                                        except Exception as e:
+                                            log_debug(f"main: не удалось выполнить setx для PO token: {e}")
+                                else:
+                                    log_debug("main: не удалось автополучить PO token (env был невалиден). Будем продолжать без токена.")
+                        else:
+                            # Нет токена в окружении — попытка использовать ранее автоматически найденный AUTO_PO_TOKEN (deferred)
+                            if AUTO_PO_TOKEN:
+                                # Пробуем валидацию отложенного токена
+                                log_debug("main: в окружении нет YTDLP_PO_TOKEN, но есть AUTO_PO_TOKEN (deferred) — валидируем.")
+                                valid = validate_po_token(AUTO_PO_TOKEN, test_url_for_validation, cookie_file=cookie_file_to_use, timeout=8)
+                                if valid:
+                                    os.environ[YTDLP_PO_TOKEN_ENV] = AUTO_PO_TOKEN
+                                    masked = _mask_po_token(AUTO_PO_TOKEN)
+                                    log_debug(f"main: отложенный AUTO_PO_TOKEN валиден — установлен в os.environ -> {masked}")
+                                    try:
+                                        print(Fore.GREEN + f"PO token применён из отложенного результата: {masked}" + Style.RESET_ALL)
+                                    except Exception:
+                                        pass
+                                    if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                                        try:
+                                            subprocess.run(["setx", YTDLP_PO_TOKEN_ENV, AUTO_PO_TOKEN], check=False)
+                                            log_debug("main: AUTO_PO_TOKEN сохранён в системные переменные через setx (Windows).")
+                                        except Exception as e:
+                                            log_debug(f"main: не удалось выполнить setx для AUTO_PO_TOKEN: {e}")
+                                else:
+                                    log_debug("main: AUTO_PO_TOKEN не прошёл валидацию.")
+                            else:
+                                # Пробуем получить автоматически (если env пустой)
+                                log_debug("main: YTDLP_PO_TOKEN не задан — пробуем автоматически получить PO token (retrieve_po_token_auto).")
+                                new_tok = retrieve_po_token_auto(timeout=8)
+                                if new_tok:
+                                    os.environ[YTDLP_PO_TOKEN_ENV] = new_tok
+                                    masked = _mask_po_token(new_tok)
+                                    log_debug(f"main: Автоматически получен PO token и установлен в os.environ -> {masked}")
+                                    try:
+                                        print(Fore.GREEN + f"Автоматически получен PO token и установлен в окружении: {masked}" + Style.RESET_ALL)
+                                    except Exception:
+                                        pass
+                                    if BGUTIL_PERSIST_TOKEN and os.name == 'nt':
+                                        try:
+                                            subprocess.run(["setx", YTDLP_PO_TOKEN_ENV, new_tok], check=False)
+                                            log_debug("main: PO token сохранён в системные переменные через setx (Windows).")
+                                        except Exception as e:
+                                            log_debug(f"main: не удалось выполнить setx для PO token: {e}")
+                                else:
+                                    log_debug("main: Автоматическое получение PO token не дало результата.")
+                    except Exception as e:
+                        log_debug(f"main: исключение при проверке/получении PO token: {e}\n{traceback.format_exc()}")
+
+                # --- конец блока фиксации PO token ---
 
                 info = get_video_info(url, platform, cookie_file_to_use)
                 break  # если успешно, выходим из цикла
